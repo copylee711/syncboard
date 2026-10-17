@@ -3,6 +3,7 @@ package app.syncboard.daemon
 import android.os.Process
 import android.util.Log
 import app.syncboard.proto.readPlain
+import app.syncboard.proto.toHex
 import app.syncboard.proto.writePlain
 import org.json.JSONArray
 import org.json.JSONObject
@@ -111,8 +112,28 @@ class IpcServer private constructor(private val server: ServerSocket, private va
         const val PORT = 53318
         const val VERSION = 1
 
-        /** Throws if another daemon already holds the port. */
-        fun bind(keyFile: File): IpcServer =
-            IpcServer(ServerSocket(PORT, 16, InetAddress.getByName("127.0.0.1")), keyFile)
+        /** Sends one command to the running daemon (used by a second `--pair` launch). */
+        fun sendTo(keyFile: File, cmd: JSONObject) {
+            runCatching {
+                Socket(InetAddress.getByName("127.0.0.1"), PORT).use { s ->
+                    s.soTimeout = 3000
+                    val out = DataOutputStream(BufferedOutputStream(s.getOutputStream()))
+                    val key = keyFile.readText().trim()
+                    writePlain(out, JSONObject().put("cmd", "hello").put("key", key))
+                    writePlain(out, cmd)
+                    Thread.sleep(300)
+                }
+            }
+        }
+
+        /** Throws if another daemon already holds the port. Creates the key if missing. */
+        fun bind(keyFile: File): IpcServer {
+            val server = ServerSocket(PORT, 16, InetAddress.getByName("127.0.0.1"))
+            if (runCatching { keyFile.readText().trim().length >= 16 }.getOrDefault(false).not()) {
+                keyFile.parentFile?.mkdirs()
+                keyFile.writeText(app.syncboard.proto.Crypto.random(24).toHex())
+            }
+            return IpcServer(server, keyFile)
+        }
     }
 }

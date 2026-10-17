@@ -151,3 +151,19 @@ footer { color: var(--muted); font-size: 12px; margin: 22px 2px 0; }
 .toasts { position: fixed; left: 0; right: 0; bottom: 16px; display: flex; flex-direction: column; align-items: center; gap: 8px; z-index: 30; pointer-events: none; }
 .toast { background: var(--ink); color: var(--on-ink); padding: 8px 14px; border-radius: 8px; font-size: 13px; max-width: 86%; animation: rise .16s; white-space: pre-line; }
 .toast.error { background: var(--danger); color: #fff; }
+
+.sheet.wide { width: min(380px, calc(100% - 24px)); max-height: calc(100% - 24px); overflow-y: auto; }
+.tabs { display: flex; gap: 2px; padding: 3px; margin: 14px 0 4px; background: var(--bg); border: 1px solid var(--line); border-radius: 8px; }
+.tabs button { flex: 1; height: 28px; border: none; background: none; border-radius: 6px; cursor: pointer; font-size: 12.5px; color: var(--muted); }
+.tabs button.on { background: var(--surface); color: var(--text); font-weight: 600; box-shadow: 0 1px 2px rgba(0,0,0,.08); }
+.steps b { color: var(--text); font-weight: 600; }
+.steps li + li { margin-top: 3px; }
+.fine { font-size: 12px; color: var(--muted); margin: 10px 0 0; }
+.usb-art { display: grid; place-items: center; height: 120px; margin: 10px 0 0; color: var(--muted); }
+.usb-art svg { width: 150px; height: 94px; stroke-width: 1.4; }
+.setup-status { display: flex; align-items: center; gap: 9px; margin-top: 14px; padding: 10px 12px; border-radius: 8px; background: var(--bg); font-size: 13px; }
+.setup-status.error { color: var(--danger); }
+.setup-status.done { color: var(--green); }
+.setup-status.error .spinner, .setup-status.done .spinner { display: none; }
+.spinner { width: 13px; height: 13px; border-radius: 50%; border: 2px solid var(--line); border-top-color: var(--ink); animation: spin .8s linear infinite; flex: none; }
+@keyframes spin { to { transform: rotate(360deg); } }

@@ -3,6 +3,7 @@ package app.syncboard.daemon
 import android.os.Looper
 import android.os.Process
 import android.util.Log
+import org.json.JSONObject
 import java.io.File
 import kotlin.system.exitProcess
 
@@ -35,12 +36,18 @@ object Main {
             System.err.println("SyncBoard daemon must run as shell (uid ${Process.myUid()})")
             exitProcess(2)
         }
+        // `--pair <uri>`: pair with the PC that launched us (via adb), whether or not a
+        // daemon is already running.
+        val pairUri = args.indexOf("--pair").takeIf { it >= 0 }?.let { args.getOrNull(it + 1) }
+
         Looper.prepareMainLooper()
         val ctx = ShellContext.init()
 
+        val keyFile = File(appFilesDir, "ipc.key")
         val ipc = try {
-            IpcServer.bind(File(appFilesDir, "ipc.key"))
+            IpcServer.bind(keyFile)
         } catch (e: Exception) {
+            if (pairUri != null) IpcServer.sendTo(keyFile, JSONObject().put("cmd", "pairQr").put("uri", pairUri))
             println("SyncBoard daemon already running")
             exitProcess(0)
         }
@@ -52,6 +59,7 @@ object Main {
         val engine = Engine(config, bridge, downloadDir) { ipc.broadcast(it) }
         ipc.start(engine)
         engine.start()
+        pairUri?.let { engine.pairQr(it) }
         watchApk()
         println("SyncBoard daemon running, pid ${Process.myPid()}")
         Log.i(Engine.TAG, "daemon started, pid ${Process.myPid()}")

@@ -71,9 +71,9 @@
     </section>
 
     <details class="advanced">
-      <summary>高级：通过 USB (ADB) 启动手机服务</summary>
+      <summary>高级</summary>
       <div class="group">
-        <p class="hint">通常不需要：手机端可以通过「无线调试」自行启动服务。只有手机端无法自启时，才用数据线连接电脑并开启 USB 调试。</p>
+        <p class="hint">手机重启后服务会停止。若手机开着无线调试，SyncBoard 会自动重新启动它；否则可以插上数据线，或在这里手动启动。</p>
         <label class="row"><span>检测到 USB 设备时自动启动<small id="adbPath"></small></span><span class="switch"><input type="checkbox" data-setting="auto_adb" /><i></i></span></label>
         <div class="row"><span>立即启动</span><button class="btn small" id="adbBtn">启动</button></div>
       </div>
@@ -82,17 +82,55 @@
   </main>
 
   <div class="sheet-backdrop" id="pairSheet" hidden>
-    <div class="sheet">
+    <div class="sheet wide">
       <div class="sheet-head">
         <h3>添加手机</h3>
         <button class="icon-btn" id="closePair" aria-label="关闭"><svg viewBox="0 0 12 12"><path d="M2.5 2.5l7 7m0-7l-7 7"/></svg></button>
       </div>
-      <div class="qr" id="qr"></div>
-      <ol class="steps">
-        <li>在手机上打开 SyncBoard</li>
-        <li>点「扫码配对」，对准上面的二维码</li>
-      </ol>
-      <div class="manual">无法扫码时，在手机上选「手动连接」并输入 <b id="ips"></b></div>
+      <div class="tabs" role="tablist">
+        <button role="tab" data-tab="wifi" class="on">无线</button>
+        <button role="tab" data-tab="usb">数据线</button>
+        <button role="tab" data-tab="app">已安装 App</button>
+      </div>
+
+      <div class="tab" data-pane="wifi">
+        <div class="qr" id="wifiQr"></div>
+        <ol class="steps">
+          <li>手机连接与电脑相同的 Wi-Fi</li>
+          <li>打开 设置 → 开发者选项 → <b>无线调试</b>，选「使用二维码配对设备」</li>
+          <li>扫描上方二维码，其余步骤自动完成</li>
+        </ol>
+        <p class="fine">没有开发者选项？在「关于手机」里连续点击「版本号」7 次（vivo/iQOO：设置 → 系统管理 → 关于手机 → 软件版本号）。需要 Android 11 及以上。</p>
+        <p class="fine"><button class="link" id="hotspotBtn">扫码后一直没反应？改用电脑热点</button></p>
+      </div>
+
+      <div class="tab" data-pane="hotspot" hidden>
+        <div class="qr" id="hotspotQr"></div>
+        <ol class="steps">
+          <li>用手机相机扫描上方二维码，连接电脑热点 <b id="hotspotName"></b></li>
+          <li>连上后点 <button class="link" id="hotspotNext">下一步</button>，再按无线调试的步骤扫码</li>
+        </ol>
+      </div>
+
+      <div class="tab" data-pane="usb" hidden>
+        <div class="usb-art"><svg viewBox="0 0 64 40"><rect x="4" y="6" width="22" height="30" rx="4"/><path d="M26 21h12m0 0v-4h8v8h-8v-4m8 0h10"/></svg></div>
+        <ol class="steps">
+          <li>打开 设置 → 开发者选项 → <b>USB 调试</b></li>
+          <li>用数据线连接电脑，在手机弹窗中点「允许」</li>
+          <li>SyncBoard 会自动安装并配置手机端</li>
+        </ol>
+      </div>
+
+      <div class="tab" data-pane="app" hidden>
+        <div class="qr" id="qr"></div>
+        <ol class="steps">
+          <li>在手机 SyncBoard 里点「扫码配对」</li>
+          <li>对准上方二维码</li>
+        </ol>
+        <div class="manual">无法扫码时选「手动连接」，输入 <b id="ips"></b></div>
+      </div>
+
+      <div class="setup-status" id="setupStatus" hidden><span class="spinner"></span><span id="setupText"></span></div>
     </div>
   </div>
 

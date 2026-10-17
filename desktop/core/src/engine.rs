@@ -58,6 +58,9 @@ pub enum Event {
     FileProgress { id: String, name: String, done: u64, total: u64, incoming: bool },
     FileDone { id: String, name: String, path: Option<String>, incoming: bool },
     FileFailed { id: String, name: String, reason: String },
+    /// A paired phone rebooted and turned on wireless debugging; the app should
+    /// `adb connect` to `addr` and start the daemon.
+    AdbWake { id: String, name: String, addr: String },
 }
 
 struct Session {
@@ -239,6 +242,12 @@ impl Engine {
         }
     }
 
+    /// Asks a connected phone to shut its daemon down.
+    pub async fn stop_peer_service(&self, peer: &str) -> Result<()> {
+        let tx = self.session_tx(peer).ok_or_else(|| anyhow!("peer not connected"))?;
+        tx.send(Message::new(json!({"t":"service.stop"}))).await.map_err(|_| anyhow!("peer disconnected"))
+    }
+
     /// Offers a file to a connected peer; streaming starts once the peer accepts.
     pub async fn send_file(self: &Arc<Self>, peer: &str, path: &Path) -> Result<String> {
         let meta = tokio::fs::metadata(path).await?;
@@ -284,8 +293,29 @@ impl Engine {
         match first.get("t").and_then(Value::as_str) {
             Some("pair") => self.handle_pair(stream, first).await,
             Some("hello") => self.handle_session(stream, addr, first).await,
+            Some("adb_wake") => self.handle_wake(addr, first),
             other => bail!("unexpected first frame {other:?}"),
         }
+    }
+
+    /// `{"t":"adb_wake","id","port","ts","mac"}`, mac = HMAC(psk, "wake" ‖ port ‖ ts).
+    fn handle_wake(&self, addr: SocketAddr, v: Value) -> Result<()> {
+        let id = v.get("id").and_then(Value::as_str).unwrap_or_default();
+        let port = v.get("port").and_then(Value::as_u64).unwrap_or(0);
+        let ts = v.get("ts").and_then(Value::as_u64).unwrap_or(0);
+        let mac = B64.decode(v.get("mac").and_then(Value::as_str).unwrap_or_default())?;
+        let peer = self.store.lock().unwrap().peer(id).cloned().ok_or_else(|| anyhow!("unknown device"))?;
+        let now = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH)?.as_secs();
+        if now.abs_diff(ts) > 300 {
+            bail!("stale wake");
+        }
+        let psk = B64.decode(&peer.psk)?;
+        let want = crypto::hmac(&psk, &[b"wake", port.to_string().as_bytes(), ts.to_string().as_bytes()]);
+        if !crypto::ct_eq(&want, &mac) {
+            bail!("bad wake mac");
+        }
+        self.emit(Event::AdbWake { id: peer.id, name: peer.name, addr: format!("{}:{port}", addr.ip()) });
+        Ok(())
     }
 
     async fn handle_pair(self: &Arc<Self>, mut stream: TcpStream, req: Value) -> Result<()> {

@@ -72,7 +72,8 @@ function render() {
             <div class="name">${esc(p.name)}</div>
             <div class="sub"><span class="dot ${p.connected ? "on" : ""}"></span>${p.connected ? "在线" : "离线"}${p.addr ? " · " + esc(p.addr) : ""}</div>
           </div>
-          ${p.connected ? `<button class="btn small" data-send="${esc(p.id)}">发送文件</button>` : ""}
+          ${p.connected ? `<button class="btn small" data-send="${esc(p.id)}">发送文件</button>
+          <button class="icon-btn" title="停止手机服务" data-stop="${esc(p.id)}" data-name="${esc(p.name)}"><svg viewBox="0 0 24 24" style="width:15px;height:15px"><path d="M12 3v8M6.3 6.8a8 8 0 1011.4 0"/></svg></button>` : ""}
           <button class="icon-btn" title="取消配对" data-unpair="${esc(p.id)}" data-name="${esc(p.name)}"><svg viewBox="0 0 12 12"><path d="M2.5 2.5l7 7m0-7l-7 7"/></svg></button>
         </div>`
       )
@@ -119,24 +120,69 @@ async function refresh() {
   render();
 }
 
-// ---------- pairing ----------
+// ---------- adding a phone ----------
 
-async function showQr() {
-  const { svg } = await call("pairing_qr");
-  $("qr").innerHTML = svg;
+let tab = "wifi";
+
+function setStatus(stage, text) {
+  const el = $("setupStatus");
+  el.hidden = !text;
+  el.className = `setup-status ${stage || ""}`;
+  $("setupText").textContent = text || "";
+}
+
+async function showTab(name) {
+  tab = name;
+  document.querySelectorAll(".tabs button").forEach((b) => b.classList.toggle("on", b.dataset.tab === (name === "hotspot" ? "wifi" : name)));
+  document.querySelectorAll("[data-pane]").forEach((p) => (p.hidden = p.dataset.pane !== name));
+  clearInterval(qrTimer);
+  setStatus("", "");
+  await invoke("setup_cancel");
+  if (name === "wifi") {
+    $("wifiQr").innerHTML = "";
+    const r = await call("setup_wifi");
+    $("wifiQr").innerHTML = r.svg;
+    setStatus("", "等待手机扫码…");
+  } else if (name === "usb") {
+    await call("setup_usb");
+  } else if (name === "app") {
+    const load = async () => ($("qr").innerHTML = (await call("pairing_qr")).svg);
+    load();
+    qrTimer = setInterval(load, 4 * 60 * 1000); // tokens expire after 5 minutes
+  } else if (name === "hotspot") {
+    $("hotspotQr").innerHTML = "";
+    try {
+      const h = await call("hotspot_start");
+      $("hotspotQr").innerHTML = h.svg;
+      $("hotspotName").textContent = h.ssid;
+    } catch {
+      showTab("wifi");
+    }
+  }
 }
 
 function openPair() {
   $("pairSheet").hidden = false;
-  showQr();
-  clearInterval(qrTimer);
-  qrTimer = setInterval(showQr, 4 * 60 * 1000); // tokens expire after 5 minutes
+  showTab(state.peers.length ? "app" : "wifi");
 }
 
 function closePair() {
+  if ($("pairSheet").hidden) return;
   $("pairSheet").hidden = true;
   clearInterval(qrTimer);
+  invoke("setup_cancel");
+  invoke("hotspot_stop");
 }
+
+document.querySelectorAll(".tabs button").forEach((b) => (b.onclick = () => showTab(b.dataset.tab)));
+$("hotspotBtn").onclick = () => showTab("hotspot");
+$("hotspotNext").onclick = () => showTab("wifi");
+
+listen("setup", (e) => {
+  const { stage, text } = e.payload;
+  setStatus(stage, text);
+  if (stage === "done") setTimeout(closePair, 1500);
+});
 
 function showPairRequest(r) {
   currentReq = r;
@@ -188,6 +234,10 @@ document.querySelectorAll("[data-setting]").forEach((el) => {
 $("peers").onclick = async (e) => {
   const send = e.target.closest("[data-send]");
   if (send) return call("pick_and_send", { peer: send.dataset.send });
+  const stop = e.target.closest("[data-stop]");
+  if (stop && confirm(`停止「${stop.dataset.name}」上的 SyncBoard 服务？之后需要在手机上或用数据线重新启动。`)) {
+    return call("stop_phone_service", { id: stop.dataset.stop });
+  }
   const un = e.target.closest("[data-unpair]");
   if (un && confirm(`取消与「${un.dataset.name}」的配对？之后需要重新扫码。`)) {
     await call("unpair", { id: un.dataset.unpair });
@@ -207,8 +257,8 @@ listen("engine", (e) => {
   const ev = e.payload;
   switch (ev.type) {
     case "paired":
-      closePair();
-      toast(`已与「${ev.name}」配对`);
+      setStatus("done", `已与「${ev.name}」配对`);
+      setTimeout(closePair, 1500);
       refresh();
       break;
     case "pairFailed":

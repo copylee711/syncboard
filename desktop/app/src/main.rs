@@ -1,10 +1,12 @@
 #![cfg_attr(not(debug_assertions), windows_subsystem = "windows")]
 
 mod adb;
+mod hotspot;
 mod system;
 
 use serde_json::{json, Value};
 use std::path::PathBuf;
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
 use syncboard_core::sync::ClipSync;
@@ -23,6 +25,10 @@ struct App {
     transfers: Mutex<Vec<Value>>,
     pair_requests: Mutex<Vec<Value>>,
     pause_item: Mutex<Option<CheckMenuItem<Wry>>>,
+    /// Cancels the running phone-setup flow (USB watch or wireless pairing).
+    setup_cancel: Mutex<Option<Arc<AtomicBool>>>,
+    /// Whether SyncBoard turned the hotspot on (so it turns it off again).
+    hotspot_ours: AtomicBool,
 }
 
 type St<'a> = tauri::State<'a, App>;
@@ -95,10 +101,8 @@ fn get_state(st: St) -> Value {
     state_json(&st)
 }
 
-#[tauri::command]
-fn pairing_qr(st: St) -> Value {
-    let uri = st.engine.pairing_uri();
-    let svg = qrcode::QrCode::new(uri.as_bytes())
+fn qr_svg(text: &str) -> String {
+    qrcode::QrCode::new(text.as_bytes())
         .map(|q| {
             q.render::<qrcode::render::svg::Color>()
                 .min_dimensions(220, 220)
@@ -107,9 +111,122 @@ fn pairing_qr(st: St) -> Value {
                 .light_color(qrcode::render::svg::Color("#ffffff"))
                 .build()
         })
-        .unwrap_or_default();
-    json!({"uri": uri, "svg": svg})
+        .unwrap_or_default()
 }
+
+#[tauri::command]
+fn pairing_qr(st: St) -> Value {
+    let uri = st.engine.pairing_uri();
+    json!({"uri": uri, "svg": qr_svg(&uri)})
+}
+
+// ---------- phone setup (USB / wireless / hotspot) ----------
+
+fn adb_path(st: &App) -> Result<PathBuf, String> {
+    let custom = st.engine.with_store(|s| s.config.settings.adb_path.clone());
+    adb::find(custom.as_deref()).ok_or_else(|| "找不到 adb".to_string())
+}
+
+/// Starts a new setup flow, cancelling any previous one.
+fn new_setup(st: &App) -> Arc<AtomicBool> {
+    let cancel = Arc::new(AtomicBool::new(false));
+    if let Some(old) = st.setup_cancel.lock().unwrap().replace(cancel.clone()) {
+        old.store(true, Ordering::Relaxed);
+    }
+    cancel
+}
+
+fn setup_event(app: &AppHandle, stage: &str, text: &str) {
+    notify_ui(app, "setup", json!({"stage": stage, "text": text}));
+}
+
+#[tauri::command]
+fn setup_cancel(st: St) {
+    if let Some(c) = st.setup_cancel.lock().unwrap().take() {
+        c.store(true, Ordering::Relaxed);
+    }
+}
+
+/// Watches `adb devices` until a phone is plugged in and authorized, then sets it up.
+#[tauri::command]
+fn setup_usb(app: AppHandle, st: St) -> Result<(), String> {
+    let adb = adb_path(&st)?;
+    let cancel = new_setup(&st);
+    std::thread::spawn(move || {
+        let mut last = String::new();
+        while !cancel.load(Ordering::Relaxed) {
+            let devs = adb::devices_with_state(&adb);
+            let usb: Vec<_> = devs.iter().filter(|(s, _)| !s.contains(':') && !s.contains("._adb")).collect();
+            let text = if let Some((serial, _)) = usb.iter().find(|(_, s)| *s == adb::DevState::Ready) {
+                let uri = app.state::<App>().engine.pairing_uri();
+                let progress = |t: &str| setup_event(&app, "progress", t);
+                match adb::setup_device(&adb, serial, &uri, true, &progress) {
+                    Ok(()) => setup_event(&app, "waiting", "手机服务已启动，正在配对…"),
+                    Err(e) => setup_event(&app, "error", &e),
+                }
+                return;
+            } else if usb.iter().any(|(_, s)| *s == adb::DevState::Unauthorized) {
+                "请在手机上点「允许 USB 调试」"
+            } else {
+                "等待手机通过 USB 连接…"
+            };
+            if last != text {
+                last = text.to_string();
+                setup_event(&app, "progress", text);
+            }
+            std::thread::sleep(Duration::from_millis(1200));
+        }
+    });
+    Ok(())
+}
+
+/// Shows an Android "pair with QR code" code and sets the phone up once it is scanned.
+#[tauri::command]
+fn setup_wifi(app: AppHandle, st: St) -> Result<Value, String> {
+    let adb = adb_path(&st)?;
+    let cancel = new_setup(&st);
+    let pairing = adb::WifiPairing::new();
+    let svg = qr_svg(&pairing.qr_text());
+    std::thread::spawn(move || {
+        let progress = |t: &str| setup_event(&app, "progress", t);
+        let r = adb::wifi_pair_and_connect(&adb, &pairing, &cancel, &progress).and_then(|serial| {
+            let uri = app.state::<App>().engine.pairing_uri();
+            adb::setup_device(&adb, &serial, &uri, false, &progress)
+        });
+        match r {
+            Ok(()) => setup_event(&app, "waiting", "手机服务已启动，正在配对…"),
+            Err(_) if cancel.load(Ordering::Relaxed) => {}
+            Err(e) => setup_event(&app, "error", &e),
+        }
+    });
+    Ok(json!({"svg": svg}))
+}
+
+#[tauri::command]
+async fn hotspot_start(st: St<'_>) -> Result<Value, String> {
+    let was_on = tauri::async_runtime::spawn_blocking(|| hotspot::info().map(|h| h.on))
+        .await
+        .map_err(|e| e.to_string())??;
+    let h = tauri::async_runtime::spawn_blocking(hotspot::start).await.map_err(|e| e.to_string())??;
+    if !was_on {
+        st.hotspot_ours.store(true, Ordering::Relaxed);
+    }
+    Ok(json!({"ssid": h.ssid, "svg": qr_svg(&h.qr_text())}))
+}
+
+#[tauri::command]
+async fn hotspot_stop(st: St<'_>) -> Result<(), String> {
+    if st.hotspot_ours.swap(false, Ordering::Relaxed) {
+        tauri::async_runtime::spawn_blocking(hotspot::stop).await.map_err(|e| e.to_string())?;
+    }
+    Ok(())
+}
+
+#[tauri::command]
+async fn stop_phone_service(st: St<'_>, id: String) -> Result<(), String> {
+    st.engine.stop_peer_service(&id).await.map_err(|e| e.to_string())
+}
+
 
 #[tauri::command]
 fn answer_pair(st: St, req: u64, accept: bool) {
@@ -257,6 +374,24 @@ fn on_engine_event(app: &AppHandle, ev: Event) {
     let st = app.state::<App>();
     let v = serde_json::to_value(&ev).unwrap_or(Value::Null);
     match &ev {
+        Event::AdbWake { addr, .. } => {
+            // A paired phone rebooted: reconnect over wireless debugging and restart it.
+            let (addr, custom) = (addr.clone(), st.engine.with_store(|s| s.config.settings.adb_path.clone()));
+            std::thread::spawn(move || {
+                if let Some(adb) = adb::find(custom.as_deref()) {
+                    if let Ok(serial) = adb::connect_wireless(&adb, &addr) {
+                        let _ = adb::start_daemon(&adb, &serial);
+                        let _ = std::process::Command::new(&adb).args(["disconnect", &serial]).output();
+                    }
+                }
+            });
+        }
+        Event::Paired { name, .. } => {
+            if let Some(c) = st.setup_cancel.lock().unwrap().take() {
+                c.store(true, Ordering::Relaxed);
+            }
+            setup_event(app, "done", &format!("已与「{name}」配对"));
+        }
         Event::PairRequest { .. } => {
             st.pair_requests.lock().unwrap().push(v.clone());
             show_window(app);
@@ -397,7 +532,8 @@ fn main() {
         .plugin(tauri_plugin_dialog::init())
         .invoke_handler(tauri::generate_handler![
             get_state, pairing_qr, answer_pair, unpair, send_paths, pick_and_send, set_settings,
-            set_paused, set_autostart, set_sendto, open_downloads, adb_start
+            set_paused, set_autostart, set_sendto, open_downloads, adb_start, setup_cancel, setup_usb,
+            setup_wifi, hotspot_start, hotspot_stop, stop_phone_service
         ])
         .setup(move |app| {
             let handle = app.handle().clone();
@@ -415,6 +551,8 @@ fn main() {
                 transfers: Mutex::new(Vec::new()),
                 pair_requests: Mutex::new(Vec::new()),
                 pause_item: Mutex::new(None),
+                setup_cancel: Mutex::new(None),
+                hotspot_ours: AtomicBool::new(false),
             });
             build_tray(app)?;
             update_tray(app.handle());

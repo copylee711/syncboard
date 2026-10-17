@@ -89,6 +89,7 @@ decrypting it proves the peer knows `psk`.
 | `file.accept` / `file.reject` / `file.cancel` | `id` | — | |
 | `chunk` | `id`, `seq` | ≤ 256 KiB | belongs to a `clip.image` or accepted `file.offer` |
 | `end` | `id`, `sha256` (hex) | — | receiver verifies |
+| `service.stop` | — | — | PC → phone: the daemon exits (user turned the phone service off) |
 
 * `id` is a random 16-hex-char string.
 * `hash` is the hex SHA-256 of the content: UTF-8 text or image bytes.
@@ -111,3 +112,18 @@ PC → phone (unicast) {"t":"here","v":1,"id":<pcId>,"name":..,"port":53317}
 
 The phone uses replies both to list PCs for code pairing and to refresh the address of an
 already paired PC.
+
+## 6. Wake after reboot
+
+Without root, the phone daemon dies when the phone reboots. If the app holds
+WRITE_SECURE_SETTINGS (granted over adb during setup), it turns wireless debugging on at boot
+and tells the PC its adb port with a single plain frame on TCP 53317:
+
+```
+{"t":"adb_wake","v":1,"id":<phoneId>,"port":<adb tls port>,"ts":<unix seconds>,
+ "mac":b64(HMAC-SHA256(psk, "wake" ‖ port ‖ ts))}
+```
+
+`port` and `ts` are written as decimal strings inside the MAC. The PC accepts `ts` within
+±300 s, runs `adb connect <phone ip>:<port>` with the key it already paired, and starts the
+daemon.

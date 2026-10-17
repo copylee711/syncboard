@@ -170,7 +170,7 @@ class Engine(
             var lastErr: Exception? = null
             for (host in hosts) {
                 try {
-                    pairWith(host, port, "qr", token)
+                    pairWith(host, port, "qr", token, hosts)
                     return@execute
                 } catch (e: PairRejected) {
                     throw e
@@ -186,7 +186,7 @@ class Engine(
 
     fun pairCode(host: String, port: Int) = io.execute {
         try {
-            pairWith(host, port, "code", null)
+            pairWith(host, port, "code", null, listOf(host))
         } catch (e: Exception) {
             emit(JSONObject().put("event", "pairFailed").put("reason", e.message ?: e.toString()))
         }
@@ -194,7 +194,7 @@ class Engine(
 
     private class PairRejected(msg: String) : IOException(msg)
 
-    private fun pairWith(host: String, port: Int, mode: String, token: ByteArray?) {
+    private fun pairWith(host: String, port: Int, mode: String, token: ByteArray?, allHosts: List<String>) {
         Socket().use { sock ->
             sock.connect(InetSocketAddress(host, port), 4000)
             sock.soTimeout = if (mode == "code") 130_000 else 15_000
@@ -222,7 +222,8 @@ class Engine(
                 val mac = unb64(ok.optString("mac"))
                 if (!Crypto.ctEq(mac, Crypto.hmac(token, "server".toByteArray(), th))) throw PairRejected("电脑身份校验失败")
             }
-            val pc = Pc(resp.getString("id"), pcName, Crypto.derivePsk(shared, token, th), mutableListOf(host), port)
+            val hosts = (listOf(host) + allHosts).distinct().toMutableList()
+            val pc = Pc(resp.getString("id"), pcName, Crypto.derivePsk(shared, token, th), hosts, port)
             config.upsert(pc)
             emit(JSONObject().put("event", "paired").put("id", pc.id).put("name", pc.name))
             loops.remove(pc.id)?.shutdown()
@@ -371,6 +372,11 @@ class Engine(
             val id = m.str("id")
             when (m.kind) {
                 "ping" -> io.execute { runCatching { writer.write(Message.of("t" to "pong")) } }
+                "service.stop" -> {
+                    Log.i(TAG, "stopped by ${pc.name}")
+                    emit(JSONObject().put("event", "stopping"))
+                    Thread { Thread.sleep(200); System.exit(0) }.start()
+                }
                 "clip.text" -> if (remember(id) && m.body.size <= MAX_TEXT) applyRemote(Clip.Text(String(m.body, Charsets.UTF_8)))
                 "clip.image" -> {
                     val size = m.header.optLong("size")

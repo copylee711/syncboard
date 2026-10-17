@@ -5,6 +5,7 @@ edition = "2021"
 
 [build-dependencies]
 tauri-build = { version = "2.7", features = [] }
+miniz_oxide = "0.8"
 
 [dependencies]
 syncboard-core = { path = "../core" }
@@ -16,6 +17,8 @@ serde_json = "1"
 tokio = { version = "1", features = ["rt-multi-thread", "sync", "time", "process"] }
 qrcode = { version = "0.14", default-features = false, features = ["svg"] }
 winreg = "0.55"
+miniz_oxide = "0.8"
+windows = { version = "0.61", features = ["Foundation", "Networking_Connectivity", "Networking_NetworkOperators"] }
 windows-sys = { version = "0.59", features = ["Win32_System_Threading", "Win32_System_ProcessStatus", "Win32_System_Diagnostics_ToolHelp", "Win32_Foundation"] }
 
 [features]
