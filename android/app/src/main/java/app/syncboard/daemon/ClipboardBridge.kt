@@ -9,6 +9,7 @@ import android.graphics.BitmapFactory
 import android.net.Uri
 import android.os.Handler
 import android.os.Looper
+import android.util.Log
 import app.syncboard.proto.Crypto
 import java.io.ByteArrayOutputStream
 
@@ -37,6 +38,7 @@ private fun ByteArray.toHexString() = joinToString("") { "%02x".format(it) }
  */
 class ClipboardBridge(context: Context) {
     private val cm = context.getSystemService(Context.CLIPBOARD_SERVICE) as ClipboardManager
+    val resolver: android.content.ContentResolver = context.contentResolver
     private val main = Handler(Looper.getMainLooper())
     private var lastTimestamp = -1L
     @Volatile private var image: Pair<String, ByteArray>? = null
@@ -60,16 +62,28 @@ class ClipboardBridge(context: Context) {
             if (ts != 0L && ts == lastTimestamp) return null
             lastTimestamp = ts
         }
-        if (desc.extras?.getBoolean(EXTRA_IS_SENSITIVE) == true) return null
+        val mimes = (0 until desc.mimeTypeCount).map { desc.getMimeType(it) }
+        // Log types and sizes only, never clipboard content.
+        Log.d(TAG, "clip changed: $mimes, items=${clip.itemCount}")
+        if (desc.extras?.getBoolean(EXTRA_IS_SENSITIVE) == true) {
+            Log.d(TAG, "skipped: marked sensitive")
+            return null
+        }
         if (clip.itemCount == 0) return null
         val item = clip.getItemAt(0)
         item.uri?.let { uri ->
             if (uri.authority == PROVIDER_AUTHORITY) return null // our own write
-            val mime = (0 until desc.mimeTypeCount).map { desc.getMimeType(it) }.firstOrNull { it.startsWith("image/") }
-            if (mime != null) return readImage(uri, maxImage)?.let { Clip.Image(it) }
+            if (mimes.any { it.startsWith("image/") }) {
+                val png = readImage(uri, maxImage) ?: return null
+                return Clip.Image(png)
+            }
         }
-        val text = item.text?.toString() ?: item.htmlText ?: return null
-        return if (text.isEmpty()) null else Clip.Text(text)
+        val text = item.text?.toString() ?: item.htmlText
+        if (text.isNullOrEmpty()) {
+            Log.d(TAG, "skipped: no text and no image (uri authority=${item.uri?.authority})")
+            return null
+        }
+        return Clip.Text(text)
     }
 
     fun setText(text: String) {
@@ -85,8 +99,8 @@ class ClipboardBridge(context: Context) {
     }
 
     /** `content read` runs as shell, which the clipboard granted access to the URI. */
-    private fun readImage(uri: Uri, max: Int): ByteArray? = runCatching {
-        val p = ProcessBuilder("content", "read", "--uri", uri.toString()).redirectErrorStream(false).start()
+    private fun readImage(uri: Uri, max: Int): ByteArray? = try {
+        val p = ProcessBuilder("content", "read", "--uri", uri.toString()).start()
         val bytes = p.inputStream.use { input ->
             val out = ByteArrayOutputStream()
             val buf = ByteArray(64 * 1024)
@@ -94,31 +108,67 @@ class ClipboardBridge(context: Context) {
                 val n = input.read(buf)
                 if (n < 0) break
                 out.write(buf, 0, n)
-                if (out.size() > max * 2) return@use null
+                if (out.size() > MAX_RAW_IMAGE) return@use null
             }
             out.toByteArray()
         }
-        p.waitFor()
-        bytes?.let { toPng(it, max) }
-    }.getOrNull()
+        val err = p.errorStream.bufferedReader().readText().trim()
+        val code = p.waitFor()
+        when {
+            bytes == null -> { Log.w(TAG, "image from ${uri.authority} is over ${MAX_RAW_IMAGE / 1048576} MB, skipped"); null }
+            bytes.isEmpty() -> { Log.w(TAG, "content read ${uri.authority} failed (exit $code): ${err.take(200)}"); null }
+            else -> { Log.d(TAG, "read ${bytes.size} bytes from ${uri.authority}"); toPng(bytes, max) }
+        }
+    } catch (e: Exception) {
+        Log.w(TAG, "reading image from ${uri.authority} failed", e)
+        null
+    }
 
     companion object {
         const val LABEL = "SyncBoard"
         const val PROVIDER_AUTHORITY = "app.syncboard.clip"
         private const val EXTRA_IS_SENSITIVE = "android.content.extra.IS_SENSITIVE"
+        private const val TAG = "SyncBoard"
         private val PNG_MAGIC = byteArrayOf(0x89.toByte(), 0x50, 0x4E, 0x47)
+
+        /** Largest encoded image we accept before decoding (photos can be big JPEGs). */
+        const val MAX_RAW_IMAGE = 64 * 1024 * 1024
+
+        /** Longest side after decoding; keeps a 50 MP photo from taking ~200 MB as a bitmap. */
+        private const val MAX_SIDE = 4096
 
         /** Re-encodes to PNG (downscaling if needed) so the PC always gets PNG ≤ [max]. */
         fun toPng(bytes: ByteArray, max: Int): ByteArray? {
             if (bytes.size <= max && bytes.size > 4 && bytes.copyOf(4).contentEquals(PNG_MAGIC)) return bytes
-            var bmp: Bitmap = BitmapFactory.decodeByteArray(bytes, 0, bytes.size) ?: return null
-            repeat(4) {
-                val out = ByteArrayOutputStream()
-                bmp.compress(Bitmap.CompressFormat.PNG, 100, out)
-                if (out.size() <= max) return out.toByteArray()
-                bmp = Bitmap.createScaledBitmap(bmp, bmp.width * 7 / 10, bmp.height * 7 / 10, true)
+            return try {
+                val bounds = BitmapFactory.Options().apply { inJustDecodeBounds = true }
+                BitmapFactory.decodeByteArray(bytes, 0, bytes.size, bounds)
+                if (bounds.outWidth <= 0 || bounds.outHeight <= 0) {
+                    Log.w(TAG, "not a decodable image (${bytes.size} bytes, type ${bounds.outMimeType})")
+                    return null
+                }
+                var sample = 1
+                while (maxOf(bounds.outWidth, bounds.outHeight) / sample > MAX_SIDE) sample *= 2
+                var bmp: Bitmap = BitmapFactory.decodeByteArray(bytes, 0, bytes.size,
+                    BitmapFactory.Options().apply { inSampleSize = sample }) ?: run {
+                    Log.w(TAG, "decode failed (${bounds.outWidth}x${bounds.outHeight} ${bounds.outMimeType})")
+                    return null
+                }
+                repeat(4) {
+                    val out = ByteArrayOutputStream()
+                    bmp.compress(Bitmap.CompressFormat.PNG, 100, out)
+                    if (out.size() <= max) {
+                        Log.d(TAG, "png ${bmp.width}x${bmp.height}, ${out.size()} bytes (from ${bounds.outMimeType})")
+                        return out.toByteArray()
+                    }
+                    bmp = Bitmap.createScaledBitmap(bmp, bmp.width * 7 / 10, bmp.height * 7 / 10, true)
+                }
+                Log.w(TAG, "image still over ${max / 1048576} MB after downscaling, skipped")
+                null
+            } catch (e: OutOfMemoryError) {
+                Log.w(TAG, "out of memory converting a ${bytes.size}-byte image", e)
+                null
             }
-            return null
         }
     }
 }

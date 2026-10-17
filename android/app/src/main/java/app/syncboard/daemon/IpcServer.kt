@@ -26,7 +26,8 @@ import java.util.concurrent.CopyOnWriteArrayList
  * Requests: {"cmd": status|pairQr|pairCode|unpair|settings|discover|reconnect|wakeInfo|stop, ...}
  * Two connection types carry raw bytes after their first frame:
  *  - {"cmd":"sendFile",name,size,pc?} then `size` bytes, streamed to the PC;
- *  - {"cmd":"getClip",name} answered with {"size"} then the clipboard image bytes.
+ *  - {"cmd":"getClip",name} answered with {"size"} then the clipboard image bytes;
+ *  - {"cmd":"pushImage",size} then `size` image bytes, put on the PCs' clipboards.
  */
 class IpcServer private constructor(private val server: ServerSocket, private val appUid: () -> Int) {
     private val clients = CopyOnWriteArrayList<DataOutputStream>()
@@ -68,6 +69,24 @@ class IpcServer private constructor(private val server: ServerSocket, private va
                     val ok = engine.sendFile(hello.optString("pc").ifEmpty { null }, Engine.sanitize(hello.optString("name")),
                         size, Limited(input, size))
                     writePlain(out, JSONObject().put("event", "sendFileResult").put("ok", ok))
+                    return
+                }
+                "pushImage" -> {
+                    val size = hello.optLong("size")
+                    val reply = JSONObject()
+                    if (size <= 0 || size > ClipboardBridge.MAX_RAW_IMAGE) {
+                        reply.put("ok", false).put("reason", "图片太大")
+                    } else {
+                        val raw = ByteArray(size.toInt()).also { input.readFully(it) }
+                        val png = ClipboardBridge.toPng(raw, Engine.MAX_IMAGE)
+                        val sent = png?.let { engine.pushImage(it) } ?: 0
+                        when {
+                            png == null -> reply.put("ok", false).put("reason", "无法读取这张图片")
+                            sent == 0 -> reply.put("ok", false).put("reason", "电脑未连接")
+                            else -> reply.put("ok", true).put("pcs", sent)
+                        }
+                    }
+                    writePlain(out, reply)
                     return
                 }
                 "getClip" -> {

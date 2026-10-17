@@ -462,6 +462,9 @@ private fun SettingsScreen(conn: DaemonClient.Conn, client: DaemonClient, onBack
                 Divider()
                 ToggleRow("图片", s.optBoolean("syncImages")) { set("syncImages", it) }
                 Divider()
+                ToggleRow("截屏后自动复制", s.optBoolean("copyScreenshots"),
+                    "新截图会放进手机和电脑剪贴板，可直接粘贴") { set("copyScreenshots", it) }
+                Divider()
                 ToggleRow("自动接收文件", s.optBoolean("autoAcceptFiles"), "保存到 下载/SyncBoard") { set("autoAcceptFiles", it) }
                 Divider()
                 ToggleRow("隐藏「已粘贴」提示", s.optBoolean("hideAccessToast"),
@@ -510,20 +513,39 @@ private fun SettingsScreen(conn: DaemonClient.Conn, client: DaemonClient, onBack
 private fun appVersion(ctx: android.content.Context) =
     runCatching { ctx.packageManager.getPackageInfo(ctx.packageName, 0).versionName }.getOrNull().orEmpty()
 
-/** Sends picked or shared files to the PC through the daemon, one at a time. */
-fun sendUris(ctx: android.content.Context, uris: List<Uri>) {
+/**
+ * Sends picked or shared files to the PC through the daemon, one at a time.
+ * [onProgress] gets (index, total, name) before each file; [onDone] runs on the main
+ * thread with a summary, after the toast.
+ */
+fun sendUris(
+    ctx: android.content.Context,
+    uris: List<Uri>,
+    onProgress: (Int, Int, String) -> Unit = { _, _, _ -> },
+    onDone: () -> Unit = {},
+) {
     val app = ctx.applicationContext
+    val main = android.os.Handler(android.os.Looper.getMainLooper())
     thread {
         var ok = 0
-        for (uri in uris) {
-            val (name, size) = app.contentResolver.query(uri, arrayOf(OpenableColumns.DISPLAY_NAME, OpenableColumns.SIZE), null, null, null)
-                ?.use { c -> if (c.moveToFirst()) (c.getString(0) ?: "file") to c.getLong(1) else null } ?: ("file" to -1L)
-            if (size < 0) continue
-            val sent = app.contentResolver.openInputStream(uri)?.use { DaemonClient.sendFile(app, name, size, it) } ?: false
+        uris.forEachIndexed { i, uri ->
+            val (name, size) = runCatching {
+                app.contentResolver.query(uri, arrayOf(OpenableColumns.DISPLAY_NAME, OpenableColumns.SIZE), null, null, null)
+                    ?.use { c -> if (c.moveToFirst()) (c.getString(0) ?: "file") to c.getLong(1) else null }
+            }.getOrNull() ?: ("file" to -1L)
+            main.post { onProgress(i, uris.size, name) }
+            if (size < 0) {
+                android.util.Log.w("SyncBoard", "send: unknown size for ${uri.authority}, skipped")
+                return@forEachIndexed
+            }
+            val sent = runCatching {
+                app.contentResolver.openInputStream(uri)?.use { DaemonClient.sendFile(app, name, size, it) } ?: false
+            }.onFailure { android.util.Log.w("SyncBoard", "send: ${uri.authority} failed", it) }.getOrDefault(false)
             if (sent) ok++
         }
-        android.os.Handler(android.os.Looper.getMainLooper()).post {
+        main.post {
             Toast.makeText(app, if (ok == uris.size) "已发送 $ok 个文件" else "发送完成 $ok/${uris.size}，请确认电脑在线", Toast.LENGTH_SHORT).show()
+            onDone()
         }
     }
 }

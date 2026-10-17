@@ -104,6 +104,45 @@ class DaemonClient(private val context: Context) {
             }
         }.getOrDefault(false)
 
+        /**
+         * Sends an image to the PCs' clipboards through the daemon. Blocking.
+         * Returns null on success, or a reason to show the user.
+         */
+        fun pushImage(input: InputStream): String? {
+            val bytes = try {
+                val out = java.io.ByteArrayOutputStream()
+                val buf = ByteArray(256 * 1024)
+                while (true) {
+                    val n = input.read(buf)
+                    if (n < 0) break
+                    out.write(buf, 0, n)
+                    if (out.size() > 64 * 1024 * 1024) return "图片太大"
+                }
+                out.toByteArray()
+            } catch (e: Exception) {
+                android.util.Log.w("SyncBoard", "pushImage: reading the shared image failed", e)
+                return "无法读取这张图片"
+            }
+            return try {
+                Socket().use { s ->
+                    s.connect(InetSocketAddress("127.0.0.1", PORT), 1000)
+                    s.soTimeout = 30_000
+                    val o = DataOutputStream(BufferedOutputStream(s.getOutputStream(), 256 * 1024))
+                    writePlain(o, JSONObject().put("cmd", "pushImage").put("size", bytes.size))
+                    o.write(bytes)
+                    o.flush()
+                    val r = readPlain(DataInputStream(BufferedInputStream(s.getInputStream())))
+                    if (r.optBoolean("ok")) null else r.optString("reason", "发送失败")
+                }
+            } catch (e: java.net.ConnectException) {
+                android.util.Log.w("SyncBoard", "pushImage: daemon not running")
+                "手机服务未运行，请打开 SyncBoard 启动"
+            } catch (e: Exception) {
+                android.util.Log.w("SyncBoard", "pushImage failed", e)
+                "发送失败：${e.message}"
+            }
+        }
+
         /** Streams one file to the PC through the daemon. Blocking. */
         fun sendFile(context: Context, name: String, size: Long, input: InputStream, pc: String? = null): Boolean =
             runCatching {

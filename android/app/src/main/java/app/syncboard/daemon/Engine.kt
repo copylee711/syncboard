@@ -52,6 +52,13 @@ class Engine(
     private val waiters = ConcurrentHashMap<String, Waiter>()
     private val seen = ArrayDeque<String>()
 
+    private val screenshots = ScreenshotWatcher(bridge.resolver) { f ->
+        val png = ClipboardBridge.toPng(f.readBytes(), MAX_IMAGE) ?: return@ScreenshotWatcher
+        bridge.setImage(png) // paste on the phone too; our own clip is not re-sent
+        val n = pushImage(png)
+        Log.i(TAG, "screenshot copied (${png.size} bytes, $n PC(s))")
+    }
+
     /** Hash of the clipboard content both sides agree on (echo suppression). */
     @Volatile private var lastHash = ""
 
@@ -59,6 +66,7 @@ class Engine(
         config.pcs.forEach { ensureLoop(it.id) }
         bridge.listen { io.execute { onLocalChange() } }
         applyToastSetting()
+        screenshots.setEnabled(config.settings.copyScreenshots)
         timer.scheduleWithFixedDelay({
             sessions.values.forEach { s -> io.execute { runCatching { s.writer.write(Message.of("t" to "ping")) } } }
         }, 30, 30, TimeUnit.SECONDS)
@@ -93,9 +101,11 @@ class Engine(
 
     fun updateSettings(o: JSONObject) {
         val before = config.settings.hideAccessToast
+        val shotsBefore = config.settings.copyScreenshots
         config.settings.update(o)
         config.save()
         if (before != config.settings.hideAccessToast) applyToastSetting()
+        if (shotsBefore != config.settings.copyScreenshots) screenshots.setEnabled(config.settings.copyScreenshots)
         pushStatus()
     }
 
@@ -123,7 +133,9 @@ class Engine(
     private fun onLocalChange() {
         val s = config.settings
         if (s.paused) return
-        val clip = runCatching { bridge.readIfNew(MAX_IMAGE) }.getOrNull() ?: return
+        val clip = runCatching { bridge.readIfNew(MAX_IMAGE) }
+            .onFailure { Log.w(TAG, "reading the clipboard failed", it) }
+            .getOrNull() ?: return
         if (clip.hash == lastHash) return
         lastHash = clip.hash
         when (clip) {
@@ -136,7 +148,27 @@ class Engine(
     }
 
     private fun broadcast(action: (Session) -> Unit) {
-        sessions.values.forEach { s -> io.execute { runCatching { action(s) }.onFailure { s.close() } } }
+        sessions.values.forEach { s ->
+            io.execute {
+                runCatching { action(s) }.onFailure {
+                    Log.w(TAG, "sending to ${s.pc.name} failed", it)
+                    s.close()
+                }
+            }
+        }
+    }
+
+    /**
+     * Puts an image on the PCs' clipboards because the user asked to (share sheet), so it
+     * ignores the pause and image-sync settings. Returns how many PCs it was sent to.
+     */
+    fun pushImage(png: ByteArray): Int {
+        val clip = Clip.Image(png)
+        lastHash = clip.hash
+        val n = sessions.size
+        broadcast { sendImage(it, clip) }
+        Log.i(TAG, "pushed image (${png.size} bytes) to $n PC(s)")
+        return n
     }
 
     private fun sendImage(s: Session, clip: Clip.Image) {

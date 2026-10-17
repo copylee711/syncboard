@@ -44,11 +44,13 @@ class Settings(
     var paused: Boolean = false,
     /** Turn off Android 12+'s "pasted from clipboard" toast (a system-wide setting). */
     var hideAccessToast: Boolean = true,
+    /** Put new screenshots on the phone and PC clipboards. */
+    var copyScreenshots: Boolean = false,
 ) {
     fun toJson(): JSONObject = JSONObject()
         .put("syncText", syncText).put("syncImages", syncImages)
         .put("autoAcceptFiles", autoAcceptFiles).put("paused", paused)
-        .put("hideAccessToast", hideAccessToast)
+        .put("hideAccessToast", hideAccessToast).put("copyScreenshots", copyScreenshots)
 
     fun update(o: JSONObject) {
         if (o.has("syncText")) syncText = o.getBoolean("syncText")
@@ -56,6 +58,7 @@ class Settings(
         if (o.has("autoAcceptFiles")) autoAcceptFiles = o.getBoolean("autoAcceptFiles")
         if (o.has("paused")) paused = o.getBoolean("paused")
         if (o.has("hideAccessToast")) hideAccessToast = o.getBoolean("hideAccessToast")
+        if (o.has("copyScreenshots")) copyScreenshots = o.getBoolean("copyScreenshots")
     }
 }
 
