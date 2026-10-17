@@ -1,0 +1,20 @@
+<?xml version="1.0" encoding="utf-8"?>
+<manifest xmlns:android="http://schemas.android.com/apk/res/android">
+    <application>
+        <!-- Test helper: copies a generated image through a private FileProvider, like a
+             gallery app would. am start -n app.syncboard/.debug.CopyImageActivity -->
+        <activity
+            android:name=".debug.CopyImageActivity"
+            android:exported="true"
+            android:theme="@android:style/Theme.Translucent.NoTitleBar" />
+        <provider
+            android:name="androidx.core.content.FileProvider"
+            android:authorities="app.syncboard.debugfiles"
+            android:exported="false"
+            android:grantUriPermissions="true">
+            <meta-data
+                android:name="android.support.FILE_PROVIDER_PATHS"
+                android:resource="@xml/debug_paths" />
+        </provider>
+    </application>
+</manifest>

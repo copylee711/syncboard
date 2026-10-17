@@ -16,6 +16,9 @@ use windows_sys::Win32::System::Ole::{CF_DIB, CF_UNICODETEXT};
 use windows_sys::Win32::UI::WindowsAndMessaging::*;
 
 const WM_WRITE: u32 = WM_APP + 1;
+const READ_TIMER: usize = 1;
+/// Delay before reading after a change, so the writer can finish (and bursts coalesce).
+const READ_DELAY_MS: u32 = 80;
 
 /// Callback for local clipboard changes. It runs on the watcher thread, so keep it short.
 pub type OnChange = Box<dyn Fn(ClipContent) + Send>;
@@ -93,6 +96,11 @@ pub fn start(on_change: OnChange) -> ClipboardWriter {
 unsafe extern "system" fn wndproc(hwnd: HWND, msg: u32, wp: WPARAM, lp: LPARAM) -> LRESULT {
     match msg {
         WM_CLIPBOARDUPDATE => {
+            SetTimer(hwnd, READ_TIMER, READ_DELAY_MS, None);
+            0
+        }
+        WM_TIMER if wp == READ_TIMER => {
+            KillTimer(hwnd, READ_TIMER);
             STATE.with(|s| {
                 if let Some(st) = s.borrow().as_ref() {
                     let seq = GetClipboardSequenceNumber();
@@ -177,7 +185,12 @@ unsafe fn read(hwnd: HWND, st: &State) -> Option<ClipContent> {
         }
         if IsClipboardFormatAvailable(CF_DIB as u32) != 0 {
             let dib = global_bytes(GetClipboardData(CF_DIB as u32))?;
-            return dib_to_png(&dib).map(ClipContent::Image);
+            let png = dib_to_png(&dib);
+            #[cfg(debug_assertions)]
+            if png.is_none() {
+                eprintln!("[clipboard] could not convert DIB ({} bytes, header {:?})", dib.len(), &dib[..dib.len().min(40)]);
+            }
+            return png.map(ClipContent::Image);
         }
         None
     })();

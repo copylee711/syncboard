@@ -42,6 +42,8 @@ impl ClipSync {
 
     fn on_local(&self, c: ClipContent) {
         let h = c.hash();
+        #[cfg(debug_assertions)]
+        eprintln!("[sync] local change {}", describe(&c));
         {
             let mut last = self.last.lock().unwrap();
             if *last == h {
@@ -55,6 +57,8 @@ impl ClipSync {
     }
 
     fn on_remote(&self, c: ClipContent) {
+        #[cfg(debug_assertions)]
+        eprintln!("[sync] remote change {}", describe(&c));
         if !self.allowed(&c) {
             return;
         }
@@ -95,4 +99,12 @@ pub fn start(
         }
     });
     sync
+}
+
+#[cfg(debug_assertions)]
+fn describe(c: &ClipContent) -> String {
+    match c {
+        ClipContent::Text(t) => format!("text ({} chars)", t.chars().count()),
+        ClipContent::Image(b) => format!("image ({} bytes)", b.len()),
+    }
 }
