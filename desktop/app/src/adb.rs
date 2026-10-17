@@ -352,6 +352,32 @@ pub fn wifi_pair_and_connect(
     }
 }
 
+#[cfg(all(test, embedded_adb))]
+mod tests {
+    use super::*;
+
+    /// On a PC without the Android SDK, `find` must fall back to the bundled adb.
+    #[test]
+    fn bundled_adb_extracts_and_runs() {
+        let tmp = std::env::temp_dir().join(format!("sb-adb-{}", std::process::id()));
+        std::fs::create_dir_all(&tmp).unwrap();
+        // SAFETY: single-threaded test; restores nothing because the process exits after.
+        unsafe {
+            std::env::set_var("LOCALAPPDATA", &tmp);
+            std::env::set_var("PATH", "");
+            std::env::remove_var("ANDROID_HOME");
+            std::env::remove_var("ANDROID_SDK_ROOT");
+        }
+        let adb = find(None).expect("bundled adb");
+        assert!(adb.starts_with(&tmp), "expected the bundled copy, got {}", adb.display());
+        let out = run(&adb, &["version"]).expect("adb version");
+        assert!(out.contains("Android Debug Bridge"), "{out}");
+        // A second call reuses the extracted copy.
+        assert_eq!(find(None).unwrap(), adb);
+        let _ = std::fs::remove_dir_all(&tmp);
+    }
+}
+
 /// Connects to a phone that announced its wireless-debugging port (after a reboot).
 pub fn connect_wireless(adb: &Path, addr: &str) -> Result<String, String> {
     let out = run(adb, &["connect", addr])?;
