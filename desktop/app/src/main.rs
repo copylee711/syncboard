@@ -156,7 +156,9 @@ fn setup_usb(app: AppHandle, st: St) -> Result<(), String> {
         let mut last = String::new();
         while !cancel.load(Ordering::Relaxed) {
             let devs = adb::devices_with_state(&adb);
-            let usb: Vec<_> = devs.iter().filter(|(s, _)| !s.contains(':') && !s.contains("._adb")).collect();
+            let mut usb: Vec<_> = devs.iter().filter(|(s, _)| !s.contains(':') && !s.contains("._adb")).collect();
+            // A real phone wins over an emulator that happens to be running.
+            usb.sort_by_key(|(s, _)| s.starts_with("emulator-"));
             let text = if let Some((serial, _)) = usb.iter().find(|(_, s)| *s == adb::DevState::Ready) {
                 let uri = app.state::<App>().engine.pairing_uri();
                 let progress = |t: &str| setup_event(&app, "progress", t);

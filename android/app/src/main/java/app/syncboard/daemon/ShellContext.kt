@@ -4,11 +4,16 @@ import android.annotation.SuppressLint
 import android.app.Application
 import android.app.Instrumentation
 import android.content.AttributionSource
+import android.content.ContentResolver
 import android.content.Context
 import android.content.ContextWrapper
+import android.content.IContentProvider
 import android.content.pm.ApplicationInfo
+import android.os.Binder
 import android.os.Build
+import android.os.IBinder
 import android.os.Process
+import android.util.Log
 
 /**
  * A Context usable from an app_process running as shell (uid 2000), so that system
@@ -29,6 +34,34 @@ class ShellContext private constructor(base: Context) : ContextWrapper(base) {
     override fun getApplicationContext(): Context = this
 
     override fun createPackageContext(packageName: String?, flags: Int): Context = this
+
+    /**
+     * The system context's resolver acquires providers as package "android" through an
+     * app thread AMS doesn't know, which fails for us. Some ROMs (OriginOS) read Settings
+     * inside ClipboardManager.getPrimaryClip, so route provider lookups through
+     * getContentProviderExternal, which is meant for shell callers.
+     */
+    private val resolver = ExternalResolver(this)
+
+    override fun getContentResolver(): ContentResolver = resolver
+
+    private class ExternalResolver(ctx: Context) : ContentResolver(ctx) {
+        // Hidden in the SDK; at runtime these override ContentResolver's abstract methods.
+        @Suppress("unused")
+        protected fun acquireProvider(c: Context?, name: String): IContentProvider? = externalProvider(name)
+
+        @Suppress("unused")
+        fun releaseProvider(p: IContentProvider?): Boolean = false
+
+        @Suppress("unused")
+        protected fun acquireUnstableProvider(c: Context?, name: String): IContentProvider? = externalProvider(name)
+
+        @Suppress("unused")
+        fun releaseUnstableProvider(p: IContentProvider?): Boolean = false
+
+        @Suppress("unused")
+        fun unstableProviderDied(p: IContentProvider?) {}
+    }
 
     override fun getSystemService(name: String): Any? {
         val service = super.getSystemService(name) ?: return null
@@ -70,6 +103,17 @@ class ShellContext private constructor(base: Context) : ContextWrapper(base) {
             instance = ctx
             return ctx
         }
+
+        /** ActivityManager.getService().getContentProviderExternal(name, user 0, token, tag).provider */
+        fun externalProvider(name: String): IContentProvider? = runCatching {
+            val am = Class.forName("android.app.ActivityManager").getMethod("getService").invoke(null)!!
+            val get = am.javaClass.getMethod(
+                "getContentProviderExternal",
+                String::class.java, Int::class.javaPrimitiveType, IBinder::class.java, String::class.java,
+            )
+            val holder = get.invoke(am, name, 0, Binder(), "syncboard") ?: return null
+            holder.javaClass.getDeclaredField("provider").apply { isAccessible = true }.get(holder) as IContentProvider?
+        }.onFailure { Log.w("SyncBoard", "external provider $name: $it") }.getOrNull()
 
         val isShell: Boolean get() = Process.myUid() == Process.SHELL_UID || Process.myUid() == 0
         val sdk: Int get() = Build.VERSION.SDK_INT

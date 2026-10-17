@@ -52,6 +52,7 @@ dependencies {
     implementation(libs.camera.view)
     implementation(libs.zxing.core)
     debugImplementation(libs.androidx.compose.ui.tooling)
+    compileOnly(project(":hidden-stubs"))
     testImplementation(libs.junit)
     testImplementation(libs.org.json)
 }

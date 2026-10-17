@@ -21,3 +21,4 @@ dependencyResolutionManagement {
 
 rootProject.name = "SyncBoard"
 include(":app")
+include(":hidden-stubs")
