@@ -1,0 +1,12 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!-- 108dp canvas, 66dp safe zone: green back board, paper front board with two lines. -->
+<vector xmlns:android="http://schemas.android.com/apk/res/android"
+    android:width="108dp" android:height="108dp"
+    android:viewportWidth="108" android:viewportHeight="108">
+    <path android:fillColor="@color/green"
+        android:pathData="M49,30h17a3,3 0,0 1,3 3v25a3,3 0,0 1,-3 3h-17a3,3 0,0 1,-3 -3v-25a3,3 0,0 1,3 -3z" />
+    <path android:fillColor="@color/sheet"
+        android:pathData="M42,47h17a3,3 0,0 1,3 3v25a3,3 0,0 1,-3 3h-17a3,3 0,0 1,-3 -3v-25a3,3 0,0 1,3 -3z" />
+    <path android:fillColor="@color/ink"
+        android:pathData="M45,58h11a1.5,1.5 0,0 1,0 3h-11a1.5,1.5 0,0 1,0 -3zM45,65h7a1.5,1.5 0,0 1,0 3h-7a1.5,1.5 0,0 1,0 -3z" />
+</vector>

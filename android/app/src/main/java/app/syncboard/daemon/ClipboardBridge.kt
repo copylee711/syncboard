@@ -11,7 +11,6 @@ import android.os.Handler
 import android.os.Looper
 import app.syncboard.proto.Crypto
 import java.io.ByteArrayOutputStream
-import java.io.File
 
 /** Local clipboard content, as seen by the sync engine. */
 sealed class Clip {
@@ -33,12 +32,16 @@ private fun ByteArray.toHexString() = joinToString("") { "%02x".format(it) }
  * Reads, writes and watches the system clipboard. In the daemon this runs as shell, which
  * Android lets read the clipboard from the background.
  *
- * Images written by us are served by [app.syncboard.ipc.ClipProvider] from [clipDir].
+ * Images we put on the clipboard stay in memory here; [app.syncboard.ipc.ClipProvider]
+ * fetches them over IPC when another app pastes.
  */
-class ClipboardBridge(context: Context, private val clipDir: File) {
+class ClipboardBridge(context: Context) {
     private val cm = context.getSystemService(Context.CLIPBOARD_SERVICE) as ClipboardManager
     private val main = Handler(Looper.getMainLooper())
     private var lastTimestamp = -1L
+    @Volatile private var image: Pair<String, ByteArray>? = null
+
+    fun image(name: String): ByteArray? = image?.takeIf { it.first == name }?.second
 
     /** [onChange] runs on the main looper; do the reading elsewhere. */
     fun listen(onChange: () -> Unit) {
@@ -74,10 +77,8 @@ class ClipboardBridge(context: Context, private val clipDir: File) {
     }
 
     fun setImage(png: ByteArray) {
-        clipDir.mkdirs()
-        clipDir.listFiles()?.forEach { it.delete() }
         val name = "clip-${Crypto.randomId()}.png"
-        File(clipDir, name).writeBytes(png)
+        image = name to png
         val uri = Uri.parse("content://$PROVIDER_AUTHORITY/$name")
         val clip = ClipData(ClipDescription(LABEL, arrayOf("image/png")), ClipData.Item(uri))
         main.post { cm.setPrimaryClip(clip) }

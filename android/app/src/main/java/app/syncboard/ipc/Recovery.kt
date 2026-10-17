@@ -1,0 +1,175 @@
+package app.syncboard.ipc
+
+import android.app.job.JobInfo
+import android.app.job.JobParameters
+import android.app.job.JobScheduler
+import android.app.job.JobService
+import android.content.BroadcastReceiver
+import android.content.ComponentName
+import android.content.Context
+import android.content.Intent
+import android.content.pm.PackageManager
+import android.net.nsd.NsdManager
+import android.net.nsd.NsdServiceInfo
+import android.provider.Settings
+import android.util.Base64
+import android.util.Log
+import app.syncboard.proto.Crypto
+import app.syncboard.proto.writePlain
+import org.json.JSONObject
+import java.io.BufferedOutputStream
+import java.io.DataOutputStream
+import java.net.InetSocketAddress
+import java.net.Socket
+import java.util.concurrent.CountDownLatch
+import java.util.concurrent.TimeUnit
+
+/**
+ * Restarting the phone service without a cable (protocol §6): turn wireless debugging
+ * on, find its port, and ask a paired PC to `adb connect` and start the daemon.
+ */
+object Recovery {
+    private const val TAG = "SyncBoard"
+    private const val ADB_WIFI = "adb_wifi_enabled"
+
+    sealed interface Result {
+        data object Started : Result
+        data object NoWifiDebugging : Result
+        data object NoPc : Result
+        data class Failed(val reason: String) : Result
+    }
+
+    fun canToggleWifiDebugging(ctx: Context) =
+        ctx.checkSelfPermission("android.permission.WRITE_SECURE_SETTINGS") == PackageManager.PERMISSION_GRANTED
+
+    private fun wifiDebuggingOn(ctx: Context) = Settings.Global.getInt(ctx.contentResolver, ADB_WIFI, 0) == 1
+
+    private fun daemonUp(): Boolean = runCatching {
+        Socket().use { it.connect(InetSocketAddress("127.0.0.1", DaemonClient.PORT), 500) }
+    }.isSuccess
+
+    /** Blocking; call off the main thread. */
+    fun run(ctx: Context): Result {
+        if (daemonUp()) return Result.Started
+        val info = WakeInfo.load(ctx) ?: return Result.NoPc
+        val weEnabled = !wifiDebuggingOn(ctx) && canToggleWifiDebugging(ctx)
+        if (weEnabled) {
+            Settings.Global.putInt(ctx.contentResolver, ADB_WIFI, 1)
+        } else if (!wifiDebuggingOn(ctx)) {
+            return Result.NoWifiDebugging
+        }
+        try {
+            val port = findAdbPort(ctx, 15_000) ?: return Result.Failed("没有找到无线调试端口（手机需要连接 Wi-Fi）")
+            if (!wakeAnyPc(info, port)) return Result.Failed("联系不到电脑，请确认电脑上的 SyncBoard 正在运行")
+            val deadline = System.currentTimeMillis() + 45_000
+            while (System.currentTimeMillis() < deadline) {
+                if (daemonUp()) return Result.Started
+                Thread.sleep(1000)
+            }
+            return Result.Failed("电脑没有完成启动，请检查电脑端 SyncBoard")
+        } finally {
+            // The daemon is detached from adbd, so wireless debugging can go off again.
+            if (weEnabled) {
+                Thread.sleep(1500)
+                Settings.Global.putInt(ctx.contentResolver, ADB_WIFI, 0)
+            }
+        }
+    }
+
+    /** Resolves this phone's own `_adb-tls-connect` mDNS service. */
+    private fun findAdbPort(ctx: Context, timeoutMs: Long): Int? {
+        val nsd = ctx.getSystemService(NsdManager::class.java)
+        val done = CountDownLatch(1)
+        var port: Int? = null
+        val listener = object : NsdManager.DiscoveryListener {
+            override fun onServiceFound(s: NsdServiceInfo) {
+                @Suppress("DEPRECATION")
+                nsd.resolveService(s, object : NsdManager.ResolveListener {
+                    override fun onResolveFailed(si: NsdServiceInfo, code: Int) {}
+                    override fun onServiceResolved(si: NsdServiceInfo) {
+                        val local = runCatching { java.net.NetworkInterface.getByInetAddress(si.host) != null }.getOrDefault(false)
+                        if (local && port == null) {
+                            port = si.port
+                            done.countDown()
+                        }
+                    }
+                })
+            }
+            override fun onServiceLost(s: NsdServiceInfo) {}
+            override fun onDiscoveryStarted(t: String) {}
+            override fun onDiscoveryStopped(t: String) {}
+            override fun onStartDiscoveryFailed(t: String, code: Int) = done.countDown()
+            override fun onStopDiscoveryFailed(t: String, code: Int) {}
+        }
+        nsd.discoverServices("_adb-tls-connect._tcp", NsdManager.PROTOCOL_DNS_SD, listener)
+        done.await(timeoutMs, TimeUnit.MILLISECONDS)
+        runCatching { nsd.stopServiceDiscovery(listener) }
+        return port
+    }
+
+    private fun wakeAnyPc(info: JSONObject, adbPort: Int): Boolean {
+        val pcs = info.getJSONArray("pcs")
+        var ok = false
+        for (i in 0 until pcs.length()) {
+            val pc = pcs.getJSONObject(i)
+            val psk = Base64.decode(pc.getString("psk"), Base64.NO_WRAP)
+            val hosts = pc.optJSONArray("hosts") ?: continue
+            for (j in 0 until hosts.length()) {
+                val host = hosts.getString(j)
+                if (host == "127.0.0.1") continue
+                val ts = System.currentTimeMillis() / 1000
+                val mac = Crypto.hmac(psk, "wake".toByteArray(), adbPort.toString().toByteArray(), ts.toString().toByteArray())
+                val sent = runCatching {
+                    Socket().use { s ->
+                        s.connect(InetSocketAddress(host, pc.optInt("port", 53317)), 3000)
+                        writePlain(DataOutputStream(BufferedOutputStream(s.getOutputStream())), JSONObject()
+                            .put("t", "adb_wake").put("v", 1).put("id", info.getString("deviceId"))
+                            .put("port", adbPort).put("ts", ts).put("mac", Base64.encodeToString(mac, Base64.NO_WRAP)))
+                    }
+                }.isSuccess
+                Log.d(TAG, "wake $host: $sent")
+                if (sent) { ok = true; break }
+            }
+        }
+        return ok
+    }
+
+    // ---- scheduling after boot ----
+
+    private const val JOB_ID = 53317
+
+    fun schedule(ctx: Context) {
+        val js = ctx.getSystemService(JobScheduler::class.java)
+        js.schedule(JobInfo.Builder(JOB_ID, ComponentName(ctx, Job::class.java))
+            .setRequiredNetworkType(JobInfo.NETWORK_TYPE_UNMETERED)
+            .setOverrideDeadline(10 * 60 * 1000L)
+            .build())
+    }
+
+    class Job : JobService() {
+        override fun onStartJob(params: JobParameters): Boolean {
+            Thread {
+                val r = runCatching { run(applicationContext) }.getOrElse { Result.Failed(it.toString()) }
+                Log.i(TAG, "boot recovery: $r")
+                jobFinished(params, r is Result.Failed)
+            }.start()
+            return true
+        }
+
+        override fun onStopJob(params: JobParameters) = true
+    }
+
+    class BootReceiver : BroadcastReceiver() {
+        override fun onReceive(ctx: Context, intent: Intent) {
+            if (intent.action == Intent.ACTION_BOOT_COMPLETED && AppPrefs.autoRecover(ctx)) schedule(ctx)
+        }
+    }
+}
+
+object AppPrefs {
+    private fun p(ctx: Context) = ctx.getSharedPreferences("app", Context.MODE_PRIVATE)
+    fun autoRecover(ctx: Context) = p(ctx).getBoolean("autoRecover", true)
+    fun setAutoRecover(ctx: Context, v: Boolean) = p(ctx).edit().putBoolean("autoRecover", v).apply()
+    fun hideFromRecents(ctx: Context) = p(ctx).getBoolean("hideRecents", false)
+    fun setHideFromRecents(ctx: Context, v: Boolean) = p(ctx).edit().putBoolean("hideRecents", v).apply()
+}

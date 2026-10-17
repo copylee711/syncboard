@@ -497,15 +497,18 @@ fn build_tray(app: &tauri::App) -> tauri::Result<()> {
     Ok(())
 }
 
-/// Polls `adb devices` and starts the daemon on newly attached phones (opt-in).
+/// While a paired phone is offline, polls `adb devices` and restarts the daemon on
+/// phones that get plugged in. Idle (no adb at all) when every phone is connected.
 fn spawn_auto_adb(app: AppHandle) {
     std::thread::spawn(move || {
         let mut started: Vec<String> = Vec::new();
         loop {
-            std::thread::sleep(Duration::from_secs(8));
+            std::thread::sleep(Duration::from_secs(5));
             let st = app.state::<App>();
             let s = st.engine.with_store(|s| s.config.settings.clone());
-            if !s.auto_adb {
+            let peers = st.engine.peers();
+            let all_online = st.engine.connected().len() >= peers.len();
+            if !s.auto_adb || peers.is_empty() || all_online || st.setup_cancel.lock().unwrap().is_some() {
                 started.clear();
                 continue;
             }

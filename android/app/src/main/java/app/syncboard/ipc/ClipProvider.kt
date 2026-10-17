@@ -11,16 +11,22 @@ import java.io.File
 import java.io.FileNotFoundException
 
 /**
- * Serves images the daemon put on the clipboard (files in Android/data/<pkg>/files/clip).
- * Exported read-only so any app can paste them; it only ever exposes that folder.
+ * Serves images the daemon put on the clipboard. The daemon keeps them in memory; on
+ * first access they are copied into our private cache. Exported read-only so any app can
+ * paste them.
  */
 class ClipProvider : ContentProvider() {
-    private fun dir() = File(requireNotNull(context).getExternalFilesDir(null), "clip")
+    private fun dir() = File(requireNotNull(context).cacheDir, "clip")
 
     private fun fileFor(uri: Uri): File {
         val name = uri.lastPathSegment ?: throw FileNotFoundException()
         if (!name.matches(Regex("clip-[0-9a-f]{16}\\.png"))) throw FileNotFoundException(name)
-        return File(dir(), name).takeIf { it.isFile } ?: throw FileNotFoundException(name)
+        val f = File(dir(), name)
+        if (!f.isFile) {
+            dir().listFiles()?.forEach { it.delete() } // keep only the current image
+            if (!DaemonClient.fetchClip(name, f)) throw FileNotFoundException(name)
+        }
+        return f
     }
 
     override fun onCreate() = true

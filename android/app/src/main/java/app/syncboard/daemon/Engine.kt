@@ -82,6 +82,15 @@ class Engine(
 
     private fun pushStatus() = emit(status())
 
+    /**
+     * What the app needs to wake a PC after a reboot, when this daemon is gone:
+     * device id, and each PC's addresses and key (see protocol §6).
+     */
+    fun wakeInfo(): JSONObject = synchronized(config) {
+        JSONObject().put("event", "wakeInfo").put("deviceId", config.deviceId)
+            .put("pcs", JSONArray(config.pcs.map { it.toJson() }))
+    }
+
     fun updateSettings(o: JSONObject) {
         val before = config.settings.hideAccessToast
         config.settings.update(o)

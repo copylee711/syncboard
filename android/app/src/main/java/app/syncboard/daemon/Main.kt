@@ -23,7 +23,6 @@ object Main {
             "app.syncboard.daemon.Main </dev/null >/dev/null 2>&1 &"
 
     private val stateDir = File("/data/local/tmp/syncboard")
-    val appFilesDir = File("/storage/emulated/0/Android/data/$PACKAGE/files")
     private val downloadDir = File("/storage/emulated/0/Download/SyncBoard")
 
     @JvmStatic
@@ -43,11 +42,10 @@ object Main {
         Looper.prepareMainLooper()
         val ctx = ShellContext.init()
 
-        val keyFile = File(appFilesDir, "ipc.key")
         val ipc = try {
-            IpcServer.bind(keyFile)
+            IpcServer.bind { appUid(ctx) }
         } catch (e: Exception) {
-            if (pairUri != null) IpcServer.sendTo(keyFile, JSONObject().put("cmd", "pairQr").put("uri", pairUri))
+            if (pairUri != null) IpcServer.sendTo(JSONObject().put("cmd", "pairQr").put("uri", pairUri))
             println("SyncBoard daemon already running")
             exitProcess(0)
         }
@@ -55,9 +53,9 @@ object Main {
         stateDir.setReadable(false, false); stateDir.setReadable(true, true)
         stateDir.setExecutable(false, false); stateDir.setExecutable(true, true)
         val config = Config.load(File(stateDir, "config.json"))
-        val bridge = ClipboardBridge(ctx, File(appFilesDir, "clip"))
+        val bridge = ClipboardBridge(ctx)
         val engine = Engine(config, bridge, downloadDir) { ipc.broadcast(it) }
-        ipc.start(engine)
+        ipc.start(engine, bridge)
         engine.start()
         pairUri?.let { engine.pairQr(it) }
         watchApk()
@@ -65,6 +63,9 @@ object Main {
         Log.i(Engine.TAG, "daemon started, pid ${Process.myPid()}")
         Looper.loop()
     }
+
+    private fun appUid(ctx: android.content.Context): Int =
+        runCatching { ctx.packageManager.getApplicationInfo(PACKAGE, 0).uid }.getOrDefault(-1)
 
     /**
      * When the app is updated its APK moves and this process runs stale code: start a

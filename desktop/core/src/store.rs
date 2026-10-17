@@ -23,7 +23,7 @@ pub struct Settings {
     pub auto_accept_files: bool,
     /// None = Downloads\SyncBoard.
     pub download_dir: Option<PathBuf>,
-    /// Start the phone daemon over ADB whenever a phone shows up in `adb devices`.
+    /// Restart the phone daemon over USB when a paired phone is offline and plugged in.
     pub auto_adb: bool,
     /// Custom adb.exe path; None = search PATH and the Android SDK.
     pub adb_path: Option<PathBuf>,
@@ -36,7 +36,7 @@ impl Default for Settings {
             sync_images: true,
             auto_accept_files: true,
             download_dir: None,
-            auto_adb: false,
+            auto_adb: true,
             adb_path: None,
         }
     }
