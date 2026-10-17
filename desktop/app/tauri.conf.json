@@ -1,0 +1,20 @@
+{
+  "$schema": "https://schema.tauri.app/config/2",
+  "productName": "SyncBoard",
+  "version": "0.1.0",
+  "identifier": "app.syncboard.desktop",
+  "build": {
+    "frontendDist": "ui"
+  },
+  "app": {
+    "withGlobalTauri": true,
+    "windows": [],
+    "security": {
+      "csp": "default-src 'self'; img-src 'self' data:; style-src 'self' 'unsafe-inline'"
+    }
+  },
+  "bundle": {
+    "active": false,
+    "icon": ["icons/32x32.png", "icons/128x128.png", "icons/icon.ico"]
+  }
+}

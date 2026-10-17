@@ -16,17 +16,29 @@ pub struct Peer {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(default)]
 pub struct Settings {
     pub sync_text: bool,
     pub sync_images: bool,
     pub auto_accept_files: bool,
     /// None = Downloads\SyncBoard.
     pub download_dir: Option<PathBuf>,
+    /// Start the phone daemon over ADB whenever a phone shows up in `adb devices`.
+    pub auto_adb: bool,
+    /// Custom adb.exe path; None = search PATH and the Android SDK.
+    pub adb_path: Option<PathBuf>,
 }
 
 impl Default for Settings {
     fn default() -> Self {
-        Settings { sync_text: true, sync_images: true, auto_accept_files: true, download_dir: None }
+        Settings {
+            sync_text: true,
+            sync_images: true,
+            auto_accept_files: true,
+            download_dir: None,
+            auto_adb: false,
+            adb_path: None,
+        }
     }
 }
 

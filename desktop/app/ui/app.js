@@ -1,0 +1,252 @@
+const { invoke } = window.__TAURI__.core;
+const { listen } = window.__TAURI__.event;
+const $ = (id) => document.getElementById(id);
+
+let state = null;
+let qrTimer = null;
+let currentReq = null;
+
+const PHONE_ICON = '<svg viewBox="0 0 24 24"><rect x="7" y="3" width="10" height="18" rx="2.5"/><path d="M11 18h2"/></svg>';
+
+function esc(s) {
+  return String(s ?? "").replace(/[&<>"']/g, (c) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" }[c]));
+}
+
+function fmtSize(n) {
+  if (n < 1024) return `${n} B`;
+  if (n < 1024 ** 2) return `${(n / 1024).toFixed(1)} KB`;
+  if (n < 1024 ** 3) return `${(n / 1024 ** 2).toFixed(1)} MB`;
+  return `${(n / 1024 ** 3).toFixed(2)} GB`;
+}
+
+function toast(text, kind = "") {
+  const el = document.createElement("div");
+  el.className = `toast ${kind}`;
+  el.textContent = text;
+  $("toasts").appendChild(el);
+  setTimeout(() => el.remove(), kind === "error" ? 5000 : 2600);
+}
+
+async function call(cmd, args) {
+  try {
+    return await invoke(cmd, args);
+  } catch (e) {
+    toast(String(e), "error");
+    throw e;
+  }
+}
+
+function render() {
+  const s = state;
+  $("syncToggle").checked = !s.paused;
+  $("syncLabel").textContent = s.paused ? "已暂停" : "同步中";
+
+  const online = s.peers.filter((p) => p.connected);
+  const dot = $("statusDot");
+  if (online.length) {
+    dot.className = "dot on";
+    $("statusLabel").textContent = online.length === 1 ? `已连接 · ${online[0].addr || ""}` : `已连接 ${online.length} 台设备`;
+    $("statusTitle").textContent = online.length === 1 ? online[0].name : online.map((p) => p.name).join("、");
+    $("statusSub").textContent = s.paused ? "同步已暂停，点右上角恢复" : "复制的文字和图片会自动出现在另一端";
+  } else if (s.peers.length) {
+    dot.className = "dot wait";
+    $("statusLabel").textContent = "未连接";
+    $("statusTitle").textContent = "等待手机连接";
+    $("statusSub").textContent = "确认手机和电脑在同一网络，且手机端服务正在运行";
+  } else {
+    dot.className = "dot";
+    $("statusLabel").textContent = "未配对";
+    $("statusTitle").textContent = "还没有配对的手机";
+    $("statusSub").textContent = "点「添加手机」，用手机上的 SyncBoard 扫码";
+  }
+  $("sendBtn").disabled = online.length === 0;
+
+  const peers = $("peers");
+  if (!s.peers.length) {
+    peers.innerHTML = `<div class="empty">没有设备</div>`;
+  } else {
+    peers.innerHTML = s.peers
+      .map(
+        (p) => `<div class="item">
+          <div class="meta">
+            <div class="name">${esc(p.name)}</div>
+            <div class="sub"><span class="dot ${p.connected ? "on" : ""}"></span>${p.connected ? "在线" : "离线"}${p.addr ? " · " + esc(p.addr) : ""}</div>
+          </div>
+          ${p.connected ? `<button class="btn small" data-send="${esc(p.id)}">发送文件</button>` : ""}
+          <button class="icon-btn" title="取消配对" data-unpair="${esc(p.id)}" data-name="${esc(p.name)}"><svg viewBox="0 0 12 12"><path d="M2.5 2.5l7 7m0-7l-7 7"/></svg></button>
+        </div>`
+      )
+      .join("");
+  }
+
+  renderTransfers();
+
+  document.querySelectorAll("[data-setting]").forEach((el) => (el.checked = !!s.settings[el.dataset.setting]));
+  $("autostart").checked = s.autostart;
+  $("sendto").checked = s.sendto;
+  $("downloadDir").textContent = s.downloadDir;
+  $("adbPath").textContent = s.adb ? `adb：${s.adb}` : "未找到 adb";
+  $("ips").textContent = s.ips.join(" 或 ") || "（未检测到局域网地址）";
+
+  if (s.pairRequests.length && !currentReq) showPairRequest(s.pairRequests[0]);
+}
+
+function renderTransfers() {
+  const list = state.transfers;
+  $("transfersSection").hidden = list.length === 0;
+  $("transfers").innerHTML = list
+    .map((t) => {
+      const dir = t.incoming ? "收到" : "发送";
+      let sub, bar = "";
+      if (t.type === "fileProgress") {
+        const pct = t.total ? Math.floor((t.done / t.total) * 100) : 0;
+        sub = `${dir}中 · ${fmtSize(t.done)} / ${fmtSize(t.total)}`;
+        bar = `<div class="bar"><i style="width:${pct}%"></i></div>`;
+      } else if (t.type === "fileDone") {
+        sub = t.incoming ? "已收到 · 点击打开文件夹" : "已发送";
+      } else {
+        sub = `${dir}失败 · ${esc(t.reason)}`;
+      }
+      return `<div class="item" ${t.type === "fileDone" && t.incoming ? 'data-open="1" style="cursor:pointer"' : ""}>
+        <div class="meta"><div class="name">${esc(t.name)}</div><div class="sub">${sub}</div>${bar}</div>
+      </div>`;
+    })
+    .join("");
+}
+
+async function refresh() {
+  state = await invoke("get_state");
+  render();
+}
+
+// ---------- pairing ----------
+
+async function showQr() {
+  const { svg } = await call("pairing_qr");
+  $("qr").innerHTML = svg;
+}
+
+function openPair() {
+  $("pairSheet").hidden = false;
+  showQr();
+  clearInterval(qrTimer);
+  qrTimer = setInterval(showQr, 4 * 60 * 1000); // tokens expire after 5 minutes
+}
+
+function closePair() {
+  $("pairSheet").hidden = true;
+  clearInterval(qrTimer);
+}
+
+function showPairRequest(r) {
+  currentReq = r;
+  $("codeTitle").textContent = `「${r.name}」请求配对`;
+  $("codeDigits").textContent = r.code;
+  $("codeSheet").hidden = false;
+}
+
+async function answer(accept) {
+  if (!currentReq) return;
+  const req = currentReq.req;
+  currentReq = null;
+  $("codeSheet").hidden = true;
+  await call("answer_pair", { req, accept });
+  refresh();
+}
+
+// ---------- events ----------
+
+const win = window.__TAURI__.window.getCurrentWindow();
+$("minBtn").onclick = () => win.minimize();
+$("closeBtn").onclick = () => win.close();
+$("addBtn").onclick = openPair;
+$("closePair").onclick = closePair;
+$("pairSheet").onclick = (e) => e.target.id === "pairSheet" && closePair();
+$("acceptBtn").onclick = () => answer(true);
+$("rejectBtn").onclick = () => answer(false);
+$("sendBtn").onclick = () => call("pick_and_send", { peer: null });
+$("folderBtn").onclick = $("folderBtn2").onclick = () => call("open_downloads");
+$("syncToggle").onchange = (e) => call("set_paused", { paused: !e.target.checked, minutes: null });
+$("autostart").onchange = (e) => call("set_autostart", { on: e.target.checked }).catch(refresh);
+$("sendto").onchange = (e) =>
+  call("set_sendto", { on: e.target.checked })
+    .then(() => e.target.checked && toast("已添加：在文件上右键 → 发送到 → SyncBoard 手机"))
+    .catch(refresh);
+$("adbBtn").onclick = async () => {
+  $("adbBtn").disabled = true;
+  try {
+    toast(await call("adb_start"));
+  } finally {
+    $("adbBtn").disabled = false;
+  }
+};
+
+document.querySelectorAll("[data-setting]").forEach((el) => {
+  el.onchange = () => call("set_settings", { patch: { [el.dataset.setting]: el.checked } });
+});
+
+$("peers").onclick = async (e) => {
+  const send = e.target.closest("[data-send]");
+  if (send) return call("pick_and_send", { peer: send.dataset.send });
+  const un = e.target.closest("[data-unpair]");
+  if (un && confirm(`取消与「${un.dataset.name}」的配对？之后需要重新扫码。`)) {
+    await call("unpair", { id: un.dataset.unpair });
+    refresh();
+  }
+};
+$("transfers").onclick = (e) => e.target.closest("[data-open]") && call("open_downloads");
+
+listen("state", (e) => {
+  state = e.payload;
+  render();
+});
+
+listen("toast", (e) => toast(e.payload.text, e.payload.kind));
+
+listen("engine", (e) => {
+  const ev = e.payload;
+  switch (ev.type) {
+    case "paired":
+      closePair();
+      toast(`已与「${ev.name}」配对`);
+      refresh();
+      break;
+    case "pairFailed":
+      toast(ev.reason, "error");
+      break;
+    case "pairRequest":
+      refresh();
+      break;
+    case "peerConnected":
+    case "peerDisconnected":
+      refresh();
+      break;
+    case "fileProgress":
+    case "fileDone":
+    case "fileFailed": {
+      state.transfers = [ev, ...state.transfers.filter((t) => t.id !== ev.id)].slice(0, 20);
+      renderTransfers();
+      if (ev.type === "fileDone" && ev.incoming) toast(`收到文件：${ev.name}`);
+      if (ev.type === "fileFailed") toast(`${ev.name}：${ev.reason}`, "error");
+      break;
+    }
+  }
+});
+
+// Drag & drop files onto the window to send them.
+listen("tauri://drag-enter", () => state?.peers.some((p) => p.connected) && ($("drop").hidden = false));
+listen("tauri://drag-leave", () => ($("drop").hidden = true));
+listen("tauri://drag-drop", (e) => {
+  $("drop").hidden = true;
+  const paths = e.payload.paths || [];
+  if (paths.length) call("send_paths", { peer: null, paths }).then(() => toast(`正在发送 ${paths.length} 个文件`));
+});
+
+document.addEventListener("keydown", (e) => {
+  if (e.key === "Escape") {
+    closePair();
+  }
+});
+document.addEventListener("contextmenu", (e) => e.preventDefault());
+
+refresh();

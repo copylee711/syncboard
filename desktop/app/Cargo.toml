@@ -1,0 +1,23 @@
+[package]
+name = "syncboard"
+version = "0.1.0"
+edition = "2021"
+
+[build-dependencies]
+tauri-build = { version = "2.7", features = [] }
+
+[dependencies]
+syncboard-core = { path = "../core" }
+tauri = { version = "2.12", features = ["tray-icon", "image-ico"] }
+tauri-plugin-single-instance = "2.5"
+tauri-plugin-dialog = "2.8"
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+tokio = { version = "1", features = ["rt-multi-thread", "sync", "time", "process"] }
+qrcode = { version = "0.14", default-features = false, features = ["svg"] }
+winreg = "0.55"
+windows-sys = { version = "0.59", features = ["Win32_System_Threading", "Win32_System_ProcessStatus", "Win32_System_Diagnostics_ToolHelp", "Win32_Foundation"] }
+
+[features]
+default = ["custom-protocol"]
+custom-protocol = ["tauri/custom-protocol"]
