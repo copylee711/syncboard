@@ -1,0 +1,16 @@
+# Rust
+desktop/target/
+# Node
+node_modules/
+desktop/ui/dist/
+# Android
+android/.gradle/
+android/build/
+android/app/build/
+android/local.properties
+android/.idea/
+android/.kotlin/
+*.iml
+*.apk
+*.keystore
+!android/app/debug.keystore

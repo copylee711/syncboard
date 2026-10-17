@@ -1,0 +1,31 @@
+[package]
+name = "syncboard-core"
+version = "0.1.0"
+edition = "2021"
+
+[lib]
+name = "syncboard_core"
+
+[[bin]]
+name = "sbcli"
+path = "src/bin/sbcli.rs"
+
+[dependencies]
+tokio = { version = "1", features = ["rt-multi-thread", "net", "io-util", "sync", "time", "macros", "fs"] }
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+anyhow = "1"
+aes-gcm = "0.10"
+hkdf = "0.12"
+hmac = "0.12"
+sha2 = "0.10"
+p256 = { version = "0.13", features = ["ecdh"] }
+rand = "0.8"
+base64 = "0.22"
+hex = "0.4"
+if-addrs = "0.13"
+qrcode = { version = "0.14", default-features = false, features = ["svg"] }
+image = { version = "0.25", default-features = false, features = ["png", "bmp"] }
+
+[target.'cfg(windows)'.dependencies]
+windows-sys = { version = "0.59", features = ["Win32_Foundation", "Win32_Graphics_Gdi", "Win32_System_DataExchange", "Win32_System_Memory", "Win32_System_Ole", "Win32_System_LibraryLoader", "Win32_UI_WindowsAndMessaging"] }
