@@ -1,5 +1,5 @@
 <!doctype html>
-<html lang="zh-CN">
+<html lang="zh-CN" data-theme="system">
 <head>
   <meta charset="utf-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1" />
@@ -65,6 +65,11 @@
     <section>
       <div class="section-head"><h2>电脑</h2></div>
       <div class="group">
+        <div class="row"><span>外观</span>
+          <span class="segmented" id="themePicker">
+            <button data-theme-opt="system">跟随系统</button><button data-theme-opt="light">浅色</button><button data-theme-opt="dark">深色</button>
+          </span>
+        </div>
         <label class="row"><span>开机自动启动</span><span class="switch"><input type="checkbox" id="autostart" /><i></i></span></label>
         <label class="row"><span>右键「发送到」菜单</span><span class="switch"><input type="checkbox" id="sendto" /><i></i></span></label>
       </div>

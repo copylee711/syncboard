@@ -36,8 +36,15 @@ async function call(cmd, args) {
   }
 }
 
+function applyTheme(theme) {
+  const t = theme || "system";
+  document.documentElement.dataset.theme = t;
+  document.querySelectorAll("[data-theme-opt]").forEach((b) => b.classList.toggle("on", b.dataset.themeOpt === t));
+}
+
 function render() {
   const s = state;
+  applyTheme(s.settings.theme);
   $("syncToggle").checked = !s.paused;
   $("syncLabel").textContent = s.paused ? "已暂停" : "同步中";
 
@@ -226,6 +233,13 @@ $("adbBtn").onclick = async () => {
     $("adbBtn").disabled = false;
   }
 };
+
+document.querySelectorAll("[data-theme-opt]").forEach((b) => {
+  b.onclick = () => {
+    applyTheme(b.dataset.themeOpt);
+    call("set_settings", { patch: { theme: b.dataset.themeOpt } });
+  };
+});
 
 document.querySelectorAll("[data-setting]").forEach((el) => {
   el.onchange = () => call("set_settings", { patch: { [el.dataset.setting]: el.checked } });

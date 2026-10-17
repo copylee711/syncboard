@@ -41,10 +41,19 @@ private val Dark = Palette(
 
 val LocalPalette = staticCompositionLocalOf { Light }
 
+/** "system", "light" or "dark" (see AppPrefs.theme). */
 @Composable
-fun SyncBoardTheme(content: @Composable () -> Unit) {
-    val p = if (isSystemInDarkTheme()) Dark else Light
-    val scheme = (if (isSystemInDarkTheme()) darkColorScheme() else lightColorScheme()).copy(
+fun isDark(mode: String): Boolean = when (mode) {
+    "light" -> false
+    "dark" -> true
+    else -> isSystemInDarkTheme()
+}
+
+@Composable
+fun SyncBoardTheme(mode: String = "system", content: @Composable () -> Unit) {
+    val dark = isDark(mode)
+    val p = if (dark) Dark else Light
+    val scheme = (if (dark) darkColorScheme() else lightColorScheme()).copy(
         primary = p.ink, onPrimary = p.onInk, background = p.bg, onBackground = p.ink,
         surface = p.surface, onSurface = p.ink, surfaceVariant = p.bg, onSurfaceVariant = p.muted,
         outline = p.line, outlineVariant = p.line, error = p.danger,
@@ -59,6 +68,13 @@ fun SyncBoardTheme(content: @Composable () -> Unit) {
         labelMedium = TextStyle(fontSize = 12.sp, fontWeight = FontWeight.SemiBold, color = p.muted),
     )
     androidx.compose.runtime.CompositionLocalProvider(LocalPalette provides p) {
-        MaterialTheme(colorScheme = scheme, typography = type, content = content)
+        MaterialTheme(colorScheme = scheme, typography = type) {
+            // Text without an explicit colour uses LocalContentColor, which is black unless a
+            // Surface sets it; provide it here so headings follow the theme.
+            androidx.compose.runtime.CompositionLocalProvider(
+                androidx.compose.material3.LocalContentColor provides p.ink,
+                content = content,
+            )
+        }
     }
 }

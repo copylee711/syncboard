@@ -12,8 +12,22 @@
   --on-ink: #f5f4f0;
   color-scheme: light;
 }
+:root[data-theme="dark"] {
+  --bg: #161615;
+  --surface: #1f1f1d;
+  --ink: #ecebe6;
+  --text: #ecebe6;
+  --muted: #93918a;
+  --line: #2e2e2b;
+  --hover: #292927;
+  --green: #4cc38a;
+  --amber: #e3a23b;
+  --danger: #ec6a6a;
+  --on-ink: #161615;
+  color-scheme: dark;
+}
 @media (prefers-color-scheme: dark) {
-  :root {
+  :root[data-theme="system"] {
     --bg: #161615;
     --surface: #1f1f1d;
     --ink: #ecebe6;
@@ -167,3 +181,7 @@ footer { color: var(--muted); font-size: 12px; margin: 22px 2px 0; }
 .setup-status.error .spinner, .setup-status.done .spinner { display: none; }
 .spinner { width: 13px; height: 13px; border-radius: 50%; border: 2px solid var(--line); border-top-color: var(--ink); animation: spin .8s linear infinite; flex: none; }
 @keyframes spin { to { transform: rotate(360deg); } }
+
+.segmented { display: flex; gap: 2px; padding: 3px; background: var(--bg); border: 1px solid var(--line); border-radius: 8px; flex: none; }
+.segmented button { height: 26px; padding: 0 10px; border: none; background: none; border-radius: 6px; cursor: pointer; font-size: 12.5px; color: var(--muted); }
+.segmented button.on { background: var(--surface); color: var(--text); font-weight: 600; box-shadow: 0 1px 2px rgba(0,0,0,.08); }

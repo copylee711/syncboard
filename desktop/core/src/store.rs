@@ -27,6 +27,8 @@ pub struct Settings {
     pub auto_adb: bool,
     /// Custom adb.exe path; None = search PATH and the Android SDK.
     pub adb_path: Option<PathBuf>,
+    /// "system", "light" or "dark".
+    pub theme: String,
 }
 
 impl Default for Settings {
@@ -38,6 +40,7 @@ impl Default for Settings {
             download_dir: None,
             auto_adb: true,
             adb_path: None,
+            theme: "system".into(),
         }
     }
 }

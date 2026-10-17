@@ -72,11 +72,25 @@ class MainActivity : ComponentActivity() {
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
-        enableEdgeToEdge()
         window.isNavigationBarContrastEnforced = false
         client = DaemonClient(applicationContext)
         val scanAtStart = intent?.getBooleanExtra(EXTRA_SCAN, false) == true
-        setContent { SyncBoardTheme { App(client, scanAtStart) } }
+        setContent {
+            var mode by remember { mutableStateOf(AppPrefs.theme(this)) }
+            val dark = isDark(mode)
+            // Status/navigation bar icons must follow the app theme, not the system one.
+            LaunchedEffect(dark) {
+                val bar = if (dark) {
+                    androidx.activity.SystemBarStyle.dark(android.graphics.Color.TRANSPARENT)
+                } else {
+                    androidx.activity.SystemBarStyle.light(android.graphics.Color.TRANSPARENT, android.graphics.Color.TRANSPARENT)
+                }
+                enableEdgeToEdge(bar, bar)
+            }
+            SyncBoardTheme(mode) {
+                App(client, scanAtStart, mode) { mode = it; AppPrefs.setTheme(this, it) }
+            }
+        }
     }
 
     override fun onStart() {
@@ -107,7 +121,7 @@ class MainActivity : ComponentActivity() {
 private enum class Screen { Home, Scan, Settings }
 
 @Composable
-private fun App(client: DaemonClient, scanAtStart: Boolean) {
+private fun App(client: DaemonClient, scanAtStart: Boolean, theme: String, setTheme: (String) -> Unit) {
     val p = LocalPalette.current
     val ctx = LocalContext.current
     val conn by client.conn.collectAsStateWithLifecycle()
@@ -150,7 +164,7 @@ private fun App(client: DaemonClient, scanAtStart: Boolean) {
                 screen = Screen.Home
                 Toast.makeText(ctx, "正在配对…", Toast.LENGTH_SHORT).show()
             }
-            Screen.Settings -> SettingsScreen(conn, client, onBack = { screen = Screen.Home })
+            Screen.Settings -> SettingsScreen(conn, client, theme, setTheme, onBack = { screen = Screen.Home })
         }
     }
 
@@ -436,7 +450,13 @@ private fun ScanScreen(onBack: () -> Unit, onResult: (String) -> Unit) {
 // ---------------- settings ----------------
 
 @Composable
-private fun SettingsScreen(conn: DaemonClient.Conn, client: DaemonClient, onBack: () -> Unit) {
+private fun SettingsScreen(
+    conn: DaemonClient.Conn,
+    client: DaemonClient,
+    theme: String,
+    setTheme: (String) -> Unit,
+    onBack: () -> Unit,
+) {
     val p = LocalPalette.current
     val ctx = LocalContext.current
     val activity = ctx as? MainActivity
@@ -471,6 +491,9 @@ private fun SettingsScreen(conn: DaemonClient.Conn, client: DaemonClient, onBack
                     "Android 12+ 读取剪贴板时系统会弹提示；这是系统级开关") { set("hideAccessToast", it) }
             }
         }
+
+        SectionLabel("外观")
+        Group { ThemePicker(theme, setTheme) }
 
         SectionLabel("后台")
         Group {

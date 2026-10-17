@@ -119,3 +119,28 @@ fun Hint(text: String) = Text(
 )
 
 val Gap = Arrangement.spacedBy(10.dp)
+
+/** Three-way segmented control: 跟随系统 / 浅色 / 深色. */
+@Composable
+fun ThemePicker(value: String, onChange: (String) -> Unit) {
+    val p = LocalPalette.current
+    val options = listOf("system" to "跟随系统", "light" to "浅色", "dark" to "深色")
+    Row(
+        Modifier.fillMaxWidth().padding(12.dp).clip(RoundedCornerShape(10.dp)).background(p.bg)
+            .border(1.dp, p.line, RoundedCornerShape(10.dp)).padding(3.dp),
+        horizontalArrangement = Arrangement.spacedBy(3.dp),
+    ) {
+        options.forEach { (key, label) ->
+            val on = key == value
+            Box(
+                Modifier.weight(1f).height(36.dp).clip(RoundedCornerShape(8.dp))
+                    .background(if (on) p.surface else Color.Transparent)
+                    .clickable { onChange(key) },
+                contentAlignment = Alignment.Center,
+            ) {
+                Text(label, fontSize = 13.sp, fontWeight = if (on) FontWeight.SemiBold else FontWeight.Normal,
+                    color = if (on) p.ink else p.muted)
+            }
+        }
+    }
+}

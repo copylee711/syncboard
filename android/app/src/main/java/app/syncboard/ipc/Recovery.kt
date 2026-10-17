@@ -170,6 +170,8 @@ object AppPrefs {
     private fun p(ctx: Context) = ctx.getSharedPreferences("app", Context.MODE_PRIVATE)
     fun autoRecover(ctx: Context) = p(ctx).getBoolean("autoRecover", true)
     fun setAutoRecover(ctx: Context, v: Boolean) = p(ctx).edit().putBoolean("autoRecover", v).apply()
+    fun theme(ctx: Context): String = p(ctx).getString("theme", "system") ?: "system"
+    fun setTheme(ctx: Context, v: String) = p(ctx).edit().putString("theme", v).apply()
     fun hideFromRecents(ctx: Context) = p(ctx).getBoolean("hideRecents", false)
     fun setHideFromRecents(ctx: Context, v: Boolean) = p(ctx).edit().putBoolean("hideRecents", v).apply()
 }

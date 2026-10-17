@@ -1,6 +1,15 @@
+import java.util.Properties
+
 plugins {
     alias(libs.plugins.android.application)
     alias(libs.plugins.kotlin.compose)
+}
+
+// Release signing lives outside the repo (default ~/.syncboard/keystore.properties, or the
+// file named by SYNCBOARD_SIGNING). Without it, release builds fall back to the debug key.
+val releaseSigning = Properties().apply {
+    val f = file(System.getenv("SYNCBOARD_SIGNING") ?: "${System.getProperty("user.home")}/.syncboard/keystore.properties")
+    if (f.isFile) f.inputStream().use { load(it) }
 }
 
 android {
@@ -17,13 +26,24 @@ android {
         versionName = "0.1.0"
     }
 
+    signingConfigs {
+        if (releaseSigning.isNotEmpty()) {
+            create("release") {
+                storeFile = file(releaseSigning.getProperty("storeFile"))
+                storePassword = releaseSigning.getProperty("storePassword")
+                keyAlias = releaseSigning.getProperty("keyAlias")
+                keyPassword = releaseSigning.getProperty("keyPassword")
+            }
+        }
+    }
+
     buildTypes {
         release {
             optimization {
                 enable = true
             }
             proguardFiles(getDefaultProguardFile("proguard-android-optimize.txt"), "proguard-rules.pro")
-            signingConfig = signingConfigs.getByName("debug")
+            signingConfig = signingConfigs.findByName("release") ?: signingConfigs.getByName("debug")
         }
     }
     compileOptions {
