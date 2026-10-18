@@ -63,7 +63,7 @@ jobs:
         # build.rs bundles adb from the runner's Android SDK (ANDROID_HOME/platform-tools).
         run: |
           ls "$ANDROID_HOME/platform-tools/adb.exe"
-          cargo build --release -p syncboard
+          cargo build --release --locked -p syncboard
           mkdir -p ../out
           cp target/release/syncboard.exe "../out/SyncBoard-${{ needs.version.outputs.version }}-windows-x64.exe"
       - uses: actions/upload-artifact@v4
