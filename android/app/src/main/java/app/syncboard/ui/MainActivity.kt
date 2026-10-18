@@ -436,12 +436,13 @@ private fun ServiceDown() {
 private fun PhoneSetupSteps() {
     val p = LocalPalette.current
     val ctx = LocalContext.current
-    var dev by remember { mutableStateOf(DevOptions.developerOptionsOn(ctx)) }
+    var devState by remember { mutableStateOf(DevOptions.devState(ctx)) }
+    val dev = devState == DevOptions.DevState.On
     var wifi by remember { mutableStateOf(DevOptions.wirelessDebuggingOn(ctx)) }
     var usb by remember { mutableStateOf(DevOptions.usbDebuggingOn(ctx)) }
     // Re-read when coming back from Settings.
     androidx.lifecycle.compose.LifecycleResumeEffect(Unit) {
-        dev = DevOptions.developerOptionsOn(ctx)
+        devState = DevOptions.devState(ctx)
         wifi = DevOptions.wirelessDebuggingOn(ctx)
         usb = DevOptions.usbDebuggingOn(ctx)
         DevOptions.dismissGuide(ctx)
@@ -463,11 +464,29 @@ private fun PhoneSetupSteps() {
         }
     }
     Group {
-        StepRow("1. 开发者选项", "在「关于手机」里连续点击版本号 7 次", dev) { go { DevOptions.openBuildNumber(ctx) } }
+        val hidden = devState == DevOptions.DevState.Hidden
+        StepRow(
+            "1. 开发者选项",
+            when (devState) {
+                DevOptions.DevState.Hidden -> "在「版本号」上连续点击 7 次解锁"
+                DevOptions.DevState.Off -> "已解锁，再打开「开发者选项」开关"
+                DevOptions.DevState.On -> "已解锁并打开"
+            },
+            dev, action = if (hidden) "去解锁" else "去打开",
+        ) {
+            // Already set up once over adb: just flip it. Otherwise walk through Settings.
+            if (DevOptions.enableDeveloperOptions(ctx)) {
+                devState = DevOptions.devState(ctx)
+            } else if (hidden) {
+                go { DevOptions.openBuildNumber(ctx) }
+            } else {
+                go { DevOptions.openDeveloperOptionsSwitch(ctx) }
+            }
+        }
         Divider()
         StepRow("2. 无线调试", "手机和电脑连同一个 Wi-Fi", wifi, enabled = dev) {
-            if (DevOptions.enableWirelessDebugging(ctx)) wifi = DevOptions.wirelessDebuggingOn(ctx)
-            if (!wifi) go { DevOptions.openWirelessDebuggingSwitch(ctx) }
+            if (DevOptions.enableWirelessDebugging(ctx)) wifi = true
+            else go { DevOptions.openWirelessDebuggingSwitch(ctx) }
         }
         Divider()
         ActionRow(
@@ -485,7 +504,7 @@ private fun PhoneSetupSteps() {
 }
 
 @Composable
-private fun StepRow(title: String, subtitle: String, done: Boolean, enabled: Boolean = true, onOpen: () -> Unit) {
+private fun StepRow(title: String, subtitle: String, done: Boolean, enabled: Boolean = true, action: String = "去开启", onOpen: () -> Unit) {
     val p = LocalPalette.current
     Row(Modifier.fillMaxWidth().padding(start = 16.dp, end = 8.dp, top = 10.dp, bottom = 10.dp), verticalAlignment = Alignment.CenterVertically) {
         Column(Modifier.weight(1f)) {
@@ -499,7 +518,7 @@ private fun StepRow(title: String, subtitle: String, done: Boolean, enabled: Boo
                 Text("已开启", fontSize = 13.sp, color = p.muted)
             }
         } else {
-            TextButton(onOpen, enabled = enabled) { Text("去开启", color = if (enabled) p.ink else p.muted, fontWeight = FontWeight.SemiBold) }
+            TextButton(onOpen, enabled = enabled) { Text(action, color = if (enabled) p.ink else p.muted, fontWeight = FontWeight.SemiBold) }
         }
     }
 }

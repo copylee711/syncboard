@@ -57,6 +57,11 @@ object Recovery {
     fun run(ctx: Context): Result {
         if (daemonUp()) return Result.Started
         val info = WakeInfo.load(ctx) ?: return Result.NoPc
+        // Wireless debugging only works with developer options on; switch both on for
+        // the restart when allowed, and back off afterwards.
+        val devOff = Settings.Global.getInt(ctx.contentResolver, Settings.Global.DEVELOPMENT_SETTINGS_ENABLED, 0) != 1
+        val weEnabledDev = devOff && canToggleWifiDebugging(ctx)
+        if (weEnabledDev) Settings.Global.putInt(ctx.contentResolver, Settings.Global.DEVELOPMENT_SETTINGS_ENABLED, 1)
         val weEnabled = !wifiDebuggingOn(ctx) && canToggleWifiDebugging(ctx)
         if (weEnabled) {
             Settings.Global.putInt(ctx.contentResolver, ADB_WIFI, 1)
@@ -79,42 +84,66 @@ object Recovery {
             return Result.Failed("电脑没有完成启动，请检查电脑端 SyncBoard")
         } finally {
             // The daemon is detached from adbd, so wireless debugging can go off again.
-            if (weEnabled) {
-                Thread.sleep(1500)
-                Settings.Global.putInt(ctx.contentResolver, ADB_WIFI, 0)
-            }
+            if (weEnabled || weEnabledDev) Thread.sleep(1500)
+            if (weEnabled) Settings.Global.putInt(ctx.contentResolver, ADB_WIFI, 0)
+            if (weEnabledDev) Settings.Global.putInt(ctx.contentResolver, Settings.Global.DEVELOPMENT_SETTINGS_ENABLED, 0)
         }
     }
 
-    /** Resolves this phone's own `_adb-tls-connect` mDNS service. */
+    /**
+     * Finds the port wireless debugging listens on, from this phone's own
+     * `_adb-tls-connect` mDNS service. Discovery can also return stale services from
+     * before wireless debugging was last restarted (each restart picks a new port), so
+     * every candidate is checked by connecting to it on loopback.
+     */
     private fun findAdbPort(ctx: Context, timeoutMs: Long): Int? {
         val nsd = ctx.getSystemService(NsdManager::class.java)
-        val done = CountDownLatch(1)
-        var port: Int? = null
+        val found = java.util.concurrent.LinkedBlockingQueue<NsdServiceInfo>()
         val listener = object : NsdManager.DiscoveryListener {
-            override fun onServiceFound(s: NsdServiceInfo) {
-                @Suppress("DEPRECATION")
-                nsd.resolveService(s, object : NsdManager.ResolveListener {
-                    override fun onResolveFailed(si: NsdServiceInfo, code: Int) {}
-                    override fun onServiceResolved(si: NsdServiceInfo) {
-                        val local = runCatching { java.net.NetworkInterface.getByInetAddress(si.host) != null }.getOrDefault(false)
-                        if (local && port == null) {
-                            port = si.port
-                            done.countDown()
-                        }
-                    }
-                })
-            }
+            override fun onServiceFound(s: NsdServiceInfo) { found.put(s) }
             override fun onServiceLost(s: NsdServiceInfo) {}
             override fun onDiscoveryStarted(t: String) {}
             override fun onDiscoveryStopped(t: String) {}
-            override fun onStartDiscoveryFailed(t: String, code: Int) = done.countDown()
+            override fun onStartDiscoveryFailed(t: String, code: Int) {}
             override fun onStopDiscoveryFailed(t: String, code: Int) {}
         }
         nsd.discoverServices("_adb-tls-connect._tcp", NsdManager.PROTOCOL_DNS_SD, listener)
-        done.await(timeoutMs, TimeUnit.MILLISECONDS)
-        runCatching { nsd.stopServiceDiscovery(listener) }
-        return port
+        val deadline = System.currentTimeMillis() + timeoutMs
+        val tried = mutableSetOf<Int>()
+        try {
+            while (true) {
+                val left = deadline - System.currentTimeMillis()
+                if (left <= 0) return null
+                val s = found.poll(left, TimeUnit.MILLISECONDS) ?: return null
+                // One resolve at a time: older Android rejects concurrent ones.
+                val port = resolve(nsd, s)?.takeIf { si ->
+                    runCatching { java.net.NetworkInterface.getByInetAddress(si.host) != null }.getOrDefault(false)
+                }?.port ?: continue
+                if (!tried.add(port)) continue
+                val open = runCatching {
+                    Socket().use { it.connect(InetSocketAddress("127.0.0.1", port), 800) }
+                }.isSuccess
+                Log.d(TAG, "adb port candidate $port: ${if (open) "listening" else "stale"}")
+                if (open) return port
+            }
+        } finally {
+            runCatching { nsd.stopServiceDiscovery(listener) }
+        }
+    }
+
+    private fun resolve(nsd: NsdManager, s: NsdServiceInfo): NsdServiceInfo? {
+        val done = CountDownLatch(1)
+        var out: NsdServiceInfo? = null
+        @Suppress("DEPRECATION")
+        nsd.resolveService(s, object : NsdManager.ResolveListener {
+            override fun onResolveFailed(si: NsdServiceInfo, code: Int) = done.countDown()
+            override fun onServiceResolved(si: NsdServiceInfo) {
+                out = si
+                done.countDown()
+            }
+        })
+        done.await(3, TimeUnit.SECONDS)
+        return out
     }
 
     private enum class Wake { Sent, Forgotten, Refused, Unreachable }

@@ -255,6 +255,9 @@ pub fn start_daemon(adb: &Path, serial: &str) -> Result<(), String> {
     if dumpsys_field(adb, serial, "versionName").is_none() {
         return Err("手机上还没有安装 SyncBoard".into());
     }
+    // Re-grant in case the app was reinstalled since setup: it lets the app switch
+    // developer options and wireless debugging on by itself.
+    let _ = shell(adb, serial, &format!("pm grant {PACKAGE} android.permission.WRITE_SECURE_SETTINGS"));
     shell(adb, serial, &launch_command("")).map(|_| ())
 }
 

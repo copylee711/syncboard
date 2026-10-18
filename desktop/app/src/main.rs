@@ -410,11 +410,18 @@ fn on_engine_event(app: &AppHandle, ev: Event) {
             // A paired phone rebooted: reconnect over wireless debugging and restart it.
             let (addr, custom) = (addr.clone(), st.engine.with_store(|s| s.config.settings.adb_path.clone()));
             std::thread::spawn(move || {
-                if let Some(adb) = adb::find(custom.as_deref()) {
-                    if let Ok(serial) = adb::connect_wireless(&adb, &addr) {
-                        let _ = adb::start_daemon(&adb, &serial);
+                eprintln!("[wake] {addr}");
+                let Some(adb) = adb::find(custom.as_deref()) else {
+                    eprintln!("[wake] no adb");
+                    return;
+                };
+                match adb::connect_wireless(&adb, &addr) {
+                    Ok(serial) => {
+                        let r = adb::start_daemon(&adb, &serial);
+                        eprintln!("[wake] start daemon on {serial}: {r:?}");
                         let _ = std::process::Command::new(&adb).args(["disconnect", &serial]).output();
                     }
+                    Err(e) => eprintln!("[wake] adb connect {addr} failed: {e}"),
                 }
             });
         }

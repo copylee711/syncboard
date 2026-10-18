@@ -17,35 +17,86 @@ import android.widget.Toast
  * on AOSP and most vendor ROMs; elsewhere the page just opens at the top.
  */
 object DevOptions {
-    enum class Step { EnableDeveloperOptions, EnableWirelessDebugging, Ready }
+    /** Where the user is on the way to developer options. */
+    enum class DevState {
+        /** Hidden: the build number still has to be tapped 7 times. */
+        Hidden,
+        /** Unhidden but switched off. vivo shows the entry first; its top switch turns it on. */
+        Off,
+        On,
+    }
 
     private const val ADB_WIFI = "adb_wifi_enabled"
+    /** vivo/OriginOS: the developer options entry is visible (set by the build-number taps). */
+    private const val VIVO_DEV_SHOWN = "vivo_development_show"
 
-    fun developerOptionsOn(ctx: Context) =
-        Settings.Global.getInt(ctx.contentResolver, Settings.Global.DEVELOPMENT_SETTINGS_ENABLED, 0) == 1
+    private fun global(ctx: Context, key: String) = Settings.Global.getInt(ctx.contentResolver, key, 0) == 1
 
-    fun usbDebuggingOn(ctx: Context) = Settings.Global.getInt(ctx.contentResolver, Settings.Global.ADB_ENABLED, 0) == 1
+    fun developerOptionsOn(ctx: Context) = global(ctx, Settings.Global.DEVELOPMENT_SETTINGS_ENABLED)
 
-    fun wirelessDebuggingOn(ctx: Context) = Settings.Global.getInt(ctx.contentResolver, ADB_WIFI, 0) == 1
-
-    fun step(ctx: Context) = when {
-        !developerOptionsOn(ctx) -> Step.EnableDeveloperOptions
-        !wirelessDebuggingOn(ctx) -> Step.EnableWirelessDebugging
-        else -> Step.Ready
+    fun devState(ctx: Context) = when {
+        developerOptionsOn(ctx) -> DevState.On
+        global(ctx, VIVO_DEV_SHOWN) -> DevState.Off
+        else -> DevState.Hidden
     }
+
+    fun usbDebuggingOn(ctx: Context) = global(ctx, Settings.Global.ADB_ENABLED)
+
+    fun wirelessDebuggingOn(ctx: Context) = global(ctx, ADB_WIFI)
+
+    /** Setup over adb granted WRITE_SECURE_SETTINGS, so switches can be flipped directly. */
+    fun canWriteSettings(ctx: Context) =
+        ctx.checkSelfPermission("android.permission.WRITE_SECURE_SETTINGS") == android.content.pm.PackageManager.PERMISSION_GRANTED
+
+    private fun put(ctx: Context, key: String) =
+        canWriteSettings(ctx) && runCatching { Settings.Global.putInt(ctx.contentResolver, key, 1) }.getOrDefault(false)
+
+    /** Turns developer options on without a trip to Settings, when allowed. */
+    fun enableDeveloperOptions(ctx: Context): Boolean {
+        if (!put(ctx, Settings.Global.DEVELOPMENT_SETTINGS_ENABLED)) return false
+        runCatching { Settings.Global.putInt(ctx.contentResolver, VIVO_DEV_SHOWN, 1) }
+        return developerOptionsOn(ctx)
+    }
+
+    /** Turns wireless debugging on directly, when allowed. */
+    fun enableWirelessDebugging(ctx: Context) = put(ctx, ADB_WIFI) && wirelessDebuggingOn(ctx)
 
     private fun highlight(action: String, key: String) = Intent(action)
         .putExtra(":settings:fragment_args_key", key)
         .putExtra(":settings:show_fragment_args", Bundle().apply { putString(":settings:fragment_args_key", key) })
         .addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
 
-    private fun Context.tryStart(vararg intents: Intent): Boolean =
-        intents.any { runCatching { startActivity(it) }.isSuccess }
+    private fun Context.tryStart(vararg intents: Intent): Intent? =
+        intents.firstOrNull { runCatching { startActivity(it) }.isSuccess }
 
-    /** "About phone", scrolled to the build number that unlocks developer options. */
+    /** vivo/OriginOS keeps the build number one level down, on its 版本信息 page. */
+    private fun vivoVersionInfo() = Intent("android.settings.SETTINGS.SUB_SETTINGS")
+        .setComponent(ComponentName("com.android.settings", "com.vivo.settings.VivoSubSettings"))
+        .putExtra(":settings:show_fragment", "com.vivo.settings.aboutphone.versioninfo.VivoVersionInfoSettings")
+        .addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
+
+    /** The page with the build number that unlocks developer options. */
     fun openBuildNumber(ctx: Context) {
-        ctx.tryStart(highlight(Settings.ACTION_DEVICE_INFO_SETTINGS, "build_number"), Intent(Settings.ACTION_SETTINGS))
-        guide(ctx, "打开开发者选项", "连续点击「版本号」7 次（vivo：版本信息 → 软件版本号）", "连续点击「版本号」7 次，直到提示已进入开发者模式，然后返回 SyncBoard。\nvivo/iQOO：先点「版本信息」，再连续点击「软件版本号」。")
+        val vivo = android.os.Build.MANUFACTURER.equals("vivo", ignoreCase = true)
+        val opened = ctx.tryStart(
+            *listOfNotNull(vivoVersionInfo().takeIf { vivo }).toTypedArray(),
+            highlight(Settings.ACTION_DEVICE_INFO_SETTINGS, "build_number"),
+            Intent(Settings.ACTION_SETTINGS).addFlags(Intent.FLAG_ACTIVITY_NEW_TASK),
+        )
+        if (opened?.component != null) {
+            guide(ctx, "解锁开发者选项", "连续点击「软件版本号」7 次，然后返回 SyncBoard",
+                "连续点击「软件版本号」7 次，看到「已进入开发者模式」后返回 SyncBoard，再点「去打开」。")
+        } else {
+            guide(ctx, "解锁开发者选项", "连续点击「版本号」7 次，然后返回 SyncBoard",
+                "连续点击「版本号」7 次，看到「您已处于开发者模式」后返回 SyncBoard。找不到的话，版本号可能在「关于手机」的「版本信息」或「软件信息」里。")
+        }
+    }
+
+    /** Developer options, for its top on/off switch (vivo shows the page but leaves it off). */
+    fun openDeveloperOptionsSwitch(ctx: Context) {
+        ctx.tryStart(Intent(Settings.ACTION_APPLICATION_DEVELOPMENT_SETTINGS).addFlags(Intent.FLAG_ACTIVITY_NEW_TASK))
+        guide(ctx, "打开开发者选项", "打开最上面的「开发者选项」开关，然后返回 SyncBoard",
+            "打开页面最上面的「开发者选项」开关，然后返回 SyncBoard 继续下一步。")
     }
 
     /** Developer options, scrolled to the wireless debugging switch. */
@@ -110,15 +161,10 @@ object DevOptions {
                 "com.android.settings", "com.android.settings.development.qstile.DevelopmentTiles\$WirelessDebugging"))
             .setPackage("com.android.settings")
             .addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
-        if (ctx.tryStart(tile)) {
+        if (ctx.tryStart(tile) != null) {
             guide(ctx, "扫码配对电脑", "点「使用二维码配对设备」，扫电脑上的码", "在电脑 SyncBoard 点「添加手机」→「无线」，然后在这里点「使用二维码配对设备」扫描电脑上的二维码。")
         } else {
             openWirelessDebuggingSwitch(ctx)
         }
     }
-
-    /** Turns wireless debugging on directly when setup granted WRITE_SECURE_SETTINGS. */
-    fun enableWirelessDebugging(ctx: Context): Boolean = runCatching {
-        Settings.Global.putInt(ctx.contentResolver, ADB_WIFI, 1)
-    }.getOrDefault(false)
 }
