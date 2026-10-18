@@ -143,10 +143,6 @@ fn dumpsys_field(adb: &Path, serial: &str, field: &str) -> Option<String> {
     Some(out.split(&format!("{field}=")).nth(1)?.split_whitespace().next()?.to_string())
 }
 
-fn version_tuple(v: &str) -> Vec<u32> {
-    v.split(|c: char| !c.is_ascii_digit()).filter_map(|p| p.parse().ok()).collect()
-}
-
 /// Returns a local APK path to install, or None if the phone is already up to date.
 fn apk_to_install(adb: &Path, serial: &str, progress: &dyn Fn(&str)) -> Result<Option<PathBuf>, String> {
     #[cfg(embedded_apk)]
@@ -164,7 +160,7 @@ fn apk_to_install(adb: &Path, serial: &str, progress: &dyn Fn(&str)) -> Result<O
     #[cfg(not(embedded_apk))]
     {
         let installed = dumpsys_field(adb, serial, "versionName");
-        if installed.as_deref().is_some_and(|v| version_tuple(v) >= version_tuple(VERSION)) {
+        if installed.as_deref().is_some_and(|v| crate::update::version_tuple(v) >= crate::update::version_tuple(VERSION)) {
             return Ok(None);
         }
         let dir = PathBuf::from(std::env::var_os("LOCALAPPDATA").ok_or("no LOCALAPPDATA")?).join("SyncBoard");

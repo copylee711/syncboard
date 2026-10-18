@@ -1,0 +1,124 @@
+package app.syncboard.ui
+
+import android.app.Notification
+import android.app.NotificationChannel
+import android.app.NotificationManager
+import android.app.PendingIntent
+import android.content.ComponentName
+import android.content.Context
+import android.content.Intent
+import android.os.Bundle
+import android.provider.Settings
+import android.widget.Toast
+
+/**
+ * Developer-option state, and shortcuts into Settings that scroll to (and highlight) the
+ * switch the user needs, like Shizuku does. Settings honours `:settings:fragment_args_key`
+ * on AOSP and most vendor ROMs; elsewhere the page just opens at the top.
+ */
+object DevOptions {
+    enum class Step { EnableDeveloperOptions, EnableWirelessDebugging, Ready }
+
+    private const val ADB_WIFI = "adb_wifi_enabled"
+
+    fun developerOptionsOn(ctx: Context) =
+        Settings.Global.getInt(ctx.contentResolver, Settings.Global.DEVELOPMENT_SETTINGS_ENABLED, 0) == 1
+
+    fun usbDebuggingOn(ctx: Context) = Settings.Global.getInt(ctx.contentResolver, Settings.Global.ADB_ENABLED, 0) == 1
+
+    fun wirelessDebuggingOn(ctx: Context) = Settings.Global.getInt(ctx.contentResolver, ADB_WIFI, 0) == 1
+
+    fun step(ctx: Context) = when {
+        !developerOptionsOn(ctx) -> Step.EnableDeveloperOptions
+        !wirelessDebuggingOn(ctx) -> Step.EnableWirelessDebugging
+        else -> Step.Ready
+    }
+
+    private fun highlight(action: String, key: String) = Intent(action)
+        .putExtra(":settings:fragment_args_key", key)
+        .putExtra(":settings:show_fragment_args", Bundle().apply { putString(":settings:fragment_args_key", key) })
+        .addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
+
+    private fun Context.tryStart(vararg intents: Intent): Boolean =
+        intents.any { runCatching { startActivity(it) }.isSuccess }
+
+    /** "About phone", scrolled to the build number that unlocks developer options. */
+    fun openBuildNumber(ctx: Context) {
+        ctx.tryStart(highlight(Settings.ACTION_DEVICE_INFO_SETTINGS, "build_number"), Intent(Settings.ACTION_SETTINGS))
+        guide(ctx, "打开开发者选项", "连续点击「版本号」7 次（vivo：版本信息 → 软件版本号）", "连续点击「版本号」7 次，直到提示已进入开发者模式，然后返回 SyncBoard。\nvivo/iQOO：先点「版本信息」，再连续点击「软件版本号」。")
+    }
+
+    /** Developer options, scrolled to the wireless debugging switch. */
+    fun openWirelessDebuggingSwitch(ctx: Context) {
+        ctx.tryStart(highlight(Settings.ACTION_APPLICATION_DEVELOPMENT_SETTINGS, "toggle_adb_wireless"))
+        guide(ctx, "打开无线调试", "打开「无线调试」，然后返回 SyncBoard", "在「调试」分组里打开「无线调试」，在弹窗中点「允许」，然后返回 SyncBoard。")
+    }
+
+    /** Developer options, scrolled to the USB debugging switch. */
+    fun openUsbDebuggingSwitch(ctx: Context) {
+        ctx.tryStart(highlight(Settings.ACTION_APPLICATION_DEVELOPMENT_SETTINGS, "enable_adb"))
+        guide(ctx, "打开 USB 调试", "打开「USB 调试」，然后插上数据线", "在「调试」分组里打开「USB 调试」，插上数据线，在手机弹窗中点「允许」。")
+    }
+
+    private const val GUIDE_CHANNEL = "guide"
+    private const val GUIDE_ID = 7
+
+    /**
+     * Shows what to do on the Settings page we just opened: a toast right away, and the
+     * same steps as a notification that stays in the shade (a heads-up banner where the
+     * ROM allows it; OriginOS doesn't by default). Settings hides app overlays, so a
+     * floating card isn't an option.
+     */
+    private fun guide(ctx: Context, title: String, short: String, text: String) {
+        // Toasts get cut at two lines on some ROMs; the notification has the full steps.
+        Toast.makeText(ctx, short, Toast.LENGTH_LONG).show()
+        val nm = ctx.getSystemService(NotificationManager::class.java)
+        if (!nm.areNotificationsEnabled()) return
+        nm.createNotificationChannel(NotificationChannel(GUIDE_CHANNEL, "设置引导", NotificationManager.IMPORTANCE_HIGH).apply {
+            description = "跳转到系统设置时提示下一步怎么做"
+            setSound(null, null)
+        })
+        val back = PendingIntent.getActivity(ctx, 0, Intent(ctx, MainActivity::class.java)
+            .addFlags(Intent.FLAG_ACTIVITY_NEW_TASK or Intent.FLAG_ACTIVITY_SINGLE_TOP), PendingIntent.FLAG_IMMUTABLE)
+        nm.notify(GUIDE_ID, Notification.Builder(ctx, GUIDE_CHANNEL)
+            .setSmallIcon(app.syncboard.R.drawable.ic_tile)
+            .setContentTitle(title)
+            .setContentText(text)
+            .setStyle(Notification.BigTextStyle().bigText(text))
+            .setContentIntent(back)
+            .setAutoCancel(true)
+            .setTimeoutAfter(60_000)
+            .build())
+    }
+
+    /** Clears the banner once the user is back in the app. */
+    fun dismissGuide(ctx: Context) {
+        ctx.getSystemService(NotificationManager::class.java).cancel(GUIDE_ID)
+    }
+
+    /** Whether to ask for the notification permission before showing the first banner. */
+    fun needsNotificationPermission(ctx: Context) = android.os.Build.VERSION.SDK_INT >= 33 &&
+        ctx.checkSelfPermission(android.Manifest.permission.POST_NOTIFICATIONS) != android.content.pm.PackageManager.PERMISSION_GRANTED
+
+    /**
+     * The wireless debugging page itself (where "pair with QR code" is). Settings exposes
+     * it as the preferences screen of its Quick Settings tile; falls back to the switch.
+     */
+    fun openWirelessDebuggingPage(ctx: Context) {
+        val tile = Intent("android.service.quicksettings.action.QS_TILE_PREFERENCES")
+            .putExtra(Intent.EXTRA_COMPONENT_NAME, ComponentName(
+                "com.android.settings", "com.android.settings.development.qstile.DevelopmentTiles\$WirelessDebugging"))
+            .setPackage("com.android.settings")
+            .addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
+        if (ctx.tryStart(tile)) {
+            guide(ctx, "扫码配对电脑", "点「使用二维码配对设备」，扫电脑上的码", "在电脑 SyncBoard 点「添加手机」→「无线」，然后在这里点「使用二维码配对设备」扫描电脑上的二维码。")
+        } else {
+            openWirelessDebuggingSwitch(ctx)
+        }
+    }
+
+    /** Turns wireless debugging on directly when setup granted WRITE_SECURE_SETTINGS. */
+    fun enableWirelessDebugging(ctx: Context): Boolean = runCatching {
+        Settings.Global.putInt(ctx.contentResolver, ADB_WIFI, 1)
+    }.getOrDefault(false)
+}

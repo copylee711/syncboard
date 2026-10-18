@@ -5,6 +5,8 @@
     <uses-permission android:name="android.permission.INTERNET" />
     <uses-permission android:name="android.permission.CAMERA" />
     <uses-permission android:name="android.permission.RECEIVE_BOOT_COMPLETED" />
+    <!-- Only for the step-by-step banner shown over Settings (see DevOptions). -->
+    <uses-permission android:name="android.permission.POST_NOTIFICATIONS" />
     <!-- Granted over adb during setup; lets the app turn wireless debugging on after a reboot. -->
     <uses-permission
         android:name="android.permission.WRITE_SECURE_SETTINGS"

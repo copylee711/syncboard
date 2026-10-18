@@ -3,6 +3,7 @@
 mod adb;
 mod hotspot;
 mod system;
+mod update;
 
 use serde_json::{json, Value};
 use std::path::PathBuf;
@@ -82,6 +83,7 @@ fn state_json(st: &App) -> Value {
     let adb = adb::find(settings.adb_path.as_deref());
     json!({
         "name": st.engine.device_name(),
+        "version": update::VERSION,
         "port": st.engine.port(),
         "ips": syncboard_core::engine::local_ipv4s(),
         "peers": peers,
@@ -234,6 +236,22 @@ async fn stop_phone_service(st: St<'_>, id: String) -> Result<(), String> {
 fn answer_pair(st: St, req: u64, accept: bool) {
     st.pair_requests.lock().unwrap().retain(|r| r["req"] != req);
     st.engine.answer_pair(req, accept);
+}
+
+#[tauri::command]
+async fn check_update() -> Result<Value, String> {
+    let latest = tauri::async_runtime::spawn_blocking(update::latest_version).await.map_err(|e| e.to_string())??;
+    let newer = update::version_tuple(&latest) > update::version_tuple(update::VERSION);
+    Ok(json!({"current": update::VERSION, "latest": latest, "newer": newer}))
+}
+
+/// Downloads `version`, swaps it in for this exe and restarts into it.
+#[tauri::command]
+async fn install_update(app: AppHandle, version: String) -> Result<(), String> {
+    let exe = tauri::async_runtime::spawn_blocking(move || update::install(&version)).await.map_err(|e| e.to_string())??;
+    update::relaunch_after_exit(&exe);
+    app.exit(0);
+    Ok(())
 }
 
 #[tauri::command]
@@ -532,13 +550,14 @@ fn config_dir() -> PathBuf {
 
 fn main() {
     let args: Vec<String> = std::env::args().collect();
+    update::cleanup();
     let app = tauri::Builder::default()
         .plugin(tauri_plugin_single_instance::init(|app, argv, _cwd| handle_args(app, &argv, false)))
         .plugin(tauri_plugin_dialog::init())
         .invoke_handler(tauri::generate_handler![
             get_state, pairing_qr, answer_pair, unpair, send_paths, pick_and_send, set_settings,
             set_paused, set_autostart, set_sendto, open_downloads, adb_start, setup_cancel, setup_usb,
-            setup_wifi, hotspot_start, hotspot_stop, stop_phone_service
+            setup_wifi, hotspot_start, hotspot_stop, stop_phone_service, check_update, install_update
         ])
         .setup(move |app| {
             let handle = app.handle().clone();

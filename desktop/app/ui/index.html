@@ -20,9 +20,9 @@
       <div class="status-line">
         <span class="dot" id="statusDot"></span>
         <span class="status-label" id="statusLabel">未连接</span>
-        <label class="pill-switch" title="剪贴板同步">
+        <label class="pill-switch" id="syncPill" title="点击暂停或恢复剪贴板同步" hidden>
           <input type="checkbox" id="syncToggle" checked />
-          <span id="syncLabel">同步中</span>
+          <span id="syncLabel">同步已开启</span>
         </label>
       </div>
       <h1 id="statusTitle">等待手机连接</h1>
@@ -72,6 +72,7 @@
         </div>
         <label class="row"><span>开机自动启动</span><span class="switch"><input type="checkbox" id="autostart" /><i></i></span></label>
         <label class="row"><span>右键「发送到」菜单</span><span class="switch"><input type="checkbox" id="sendto" /><i></i></span></label>
+        <div class="row"><span>版本<small id="versionInfo"></small></span><button class="btn small" id="updateBtn">检查更新</button></div>
       </div>
     </section>
 

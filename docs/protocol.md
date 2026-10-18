@@ -90,6 +90,7 @@ decrypting it proves the peer knows `psk`.
 | `chunk` | `id`, `seq` | ≤ 256 KiB | belongs to a `clip.image` or accepted `file.offer` |
 | `end` | `id`, `sha256` (hex) | — | receiver verifies |
 | `service.stop` | — | — | PC → phone: the daemon exits (user turned the phone service off) |
+| `unpaired` | — | — | either way: the sender removed the other side, which deletes it too and closes the connection |
 
 * `id` is a random 16-hex-char string.
 * `hash` is the hex SHA-256 of the content: UTF-8 text or image bytes.
@@ -126,4 +127,7 @@ and tells the PC its adb port with a single plain frame on TCP 53317:
 
 `port` and `ts` are written as decimal strings inside the MAC. The PC accepts `ts` within
 ±300 s, runs `adb connect <phone ip>:<port>` with the key it already paired, and starts the
-daemon.
+daemon. It answers with one plain frame before closing: `{"t":"wake_ok"}`, or
+`{"t":"wake_rejected","code":"unknown_device"|"bad_request"}`. `unknown_device` means the PC
+removed this phone; the app drops that PC from its cached wake list. Older PCs close without
+answering, which the app treats as `wake_ok`.

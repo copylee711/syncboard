@@ -7,7 +7,6 @@ import android.content.pm.PackageManager
 import android.net.Uri
 import android.os.Bundle
 import android.provider.OpenableColumns
-import android.provider.Settings
 import android.widget.Toast
 import androidx.activity.ComponentActivity
 import androidx.activity.compose.BackHandler
@@ -65,6 +64,7 @@ import app.syncboard.ipc.DaemonClient
 import app.syncboard.ipc.Recovery
 import app.syncboard.ipc.WakeInfo
 import org.json.JSONObject
+import kotlinx.coroutines.launch
 import kotlin.concurrent.thread
 
 class MainActivity : ComponentActivity() {
@@ -149,6 +149,7 @@ private fun App(client: DaemonClient, scanAtStart: Boolean, theme: String, setTh
                 "fileDone" -> if (ev.optBoolean("incoming")) {
                     Toast.makeText(ctx, "已收到 ${ev.optString("name")}（下载/SyncBoard）", Toast.LENGTH_SHORT).show()
                 }
+                "unpairedByPc" -> Toast.makeText(ctx, "「${ev.optString("name")}」已移除这台手机", Toast.LENGTH_LONG).show()
                 "fileFailed" -> Toast.makeText(ctx, "${ev.optString("name")}：${ev.optString("reason")}", Toast.LENGTH_SHORT).show()
             }
         }
@@ -234,7 +235,8 @@ private fun HomeScreen(
                         },
                         fontSize = 13.sp, color = p.muted, modifier = Modifier.weight(1f),
                     )
-                    PausePill(paused) { client.send(JSONObject().put("cmd", "settings").put("settings", JSONObject().put("paused", !paused))) }
+                    // A pause switch, not a status: nothing to pause until a PC is paired.
+                    if (list.isNotEmpty()) PausePill(paused) { client.send(JSONObject().put("cmd", "settings").put("settings", JSONObject().put("paused", !paused))) }
                 }
                 Text(
                     when {
@@ -295,7 +297,7 @@ private fun PausePill(paused: Boolean, onClick: () -> Unit) {
     ) {
         Dot(if (paused) p.muted else p.green, 7)
         Spacer(Modifier.width(6.dp))
-        Text(if (paused) "已暂停" else "同步中", fontSize = 12.sp, color = p.ink)
+        Text(if (paused) "同步已暂停" else "同步已开启", fontSize = 12.sp, color = p.ink)
     }
 }
 
@@ -364,12 +366,15 @@ private fun AddPcSheet(discovered: List<JSONObject>, onScan: () -> Unit, onManua
     }
 }
 
-/** Shown when the daemon isn't running: restart it (after a reboot) or explain setup. */
+/**
+ * Shown when the daemon isn't running: restart it (after a reboot) through a paired PC,
+ * or walk through setting the phone up on the PC again.
+ */
 @Composable
 private fun ServiceDown() {
     val p = LocalPalette.current
     val ctx = LocalContext.current
-    val known = remember { WakeInfo.load(ctx) != null }
+    var known by remember { mutableStateOf(WakeInfo.load(ctx) != null) }
     var busy by remember { mutableStateOf(false) }
     var message by remember { mutableStateOf<String?>(null) }
 
@@ -379,14 +384,14 @@ private fun ServiceDown() {
         Text("手机服务未运行", fontSize = 13.sp, color = p.muted)
     }
     Text(
-        if (known) "服务需要重新启动" else "先在电脑上完成设置",
+        if (known) "服务需要重新启动" else "在电脑上添加这台手机",
         style = androidx.compose.material3.MaterialTheme.typography.headlineSmall, modifier = Modifier.padding(top = 10.dp),
     )
     Text(
         if (known) {
             "手机重启后，后台同步服务会停止。SyncBoard 可以通过「无线调试」请电脑重新启动它，不需要数据线。"
         } else {
-            "SyncBoard 的后台服务需要电脑帮忙启动一次：在电脑上打开 SyncBoard，点「添加手机」，按提示用无线调试扫码或插上数据线，其余步骤会自动完成。"
+            "SyncBoard 的后台服务需要电脑帮忙启动：在电脑上打开 SyncBoard，点「添加手机」，按下面的步骤用无线调试扫码或插上数据线，其余步骤会自动完成。"
         },
         fontSize = 14.sp, color = p.muted, lineHeight = 21.sp, modifier = Modifier.padding(top = 6.dp),
     )
@@ -398,25 +403,97 @@ private fun ServiceDown() {
             thread {
                 val r = Recovery.run(ctx.applicationContext)
                 busy = false
-                message = when (r) {
-                    Recovery.Result.Started -> null
-                    Recovery.Result.NoPc -> "还没有配对的电脑"
-                    Recovery.Result.NoWifiDebugging -> "请先在开发者选项中打开「无线调试」，再点一键启动。"
-                    is Recovery.Result.Failed -> r.reason
+                when (r) {
+                    Recovery.Result.Started -> {}
+                    Recovery.Result.NoPc, Recovery.Result.Forgotten -> {
+                        known = false
+                        message = if (r == Recovery.Result.Forgotten) "电脑已移除这台手机，请按下面的步骤重新添加。" else null
+                    }
+                    Recovery.Result.NoWifiDebugging -> message = "请先打开「无线调试」（见下方），再点一键启动。"
+                    is Recovery.Result.Failed -> message = r.reason
                 }
             }
         }
-        if (!Recovery.canToggleWifiDebugging(ctx)) {
-            Spacer(Modifier.height(10.dp))
-            LineButton("打开开发者选项", Modifier.fillMaxWidth()) {
-                runCatching { ctx.startActivity(Intent(Settings.ACTION_APPLICATION_DEVELOPMENT_SETTINGS)) }
-            }
-        }
-        message?.let { Text(it, color = p.danger, fontSize = 13.sp, modifier = Modifier.padding(top = 12.dp)) }
     }
-    SectionLabel("或者")
+    message?.let { Text(it, color = p.danger, fontSize = 13.sp, modifier = Modifier.padding(top = 12.dp)) }
+
+    SectionLabel(if (known) "或者重新添加" else "手机上的准备")
+    PhoneSetupSteps()
+}
+
+/**
+ * Developer-option checklist with shortcuts that jump straight to the switch to turn on,
+ * so pairing (or re-pairing) with the PC takes a few taps.
+ */
+@Composable
+private fun PhoneSetupSteps() {
+    val p = LocalPalette.current
+    val ctx = LocalContext.current
+    var dev by remember { mutableStateOf(DevOptions.developerOptionsOn(ctx)) }
+    var wifi by remember { mutableStateOf(DevOptions.wirelessDebuggingOn(ctx)) }
+    var usb by remember { mutableStateOf(DevOptions.usbDebuggingOn(ctx)) }
+    // Re-read when coming back from Settings.
+    androidx.lifecycle.compose.LifecycleResumeEffect(Unit) {
+        dev = DevOptions.developerOptionsOn(ctx)
+        wifi = DevOptions.wirelessDebuggingOn(ctx)
+        usb = DevOptions.usbDebuggingOn(ctx)
+        DevOptions.dismissGuide(ctx)
+        onPauseOrDispose {}
+    }
+    // The guide banner needs the notification permission; ask once, then jump either way.
+    var pending by remember { mutableStateOf<(() -> Unit)?>(null) }
+    val askNotify = rememberLauncherForActivityResult(ActivityResultContracts.RequestPermission()) {
+        pending?.invoke()
+        pending = null
+    }
+    fun go(open: () -> Unit) {
+        if (DevOptions.needsNotificationPermission(ctx) && !AppPrefs.askedNotify(ctx)) {
+            AppPrefs.setAskedNotify(ctx)
+            pending = open
+            askNotify.launch(Manifest.permission.POST_NOTIFICATIONS)
+        } else {
+            open()
+        }
+    }
     Group {
-        Hint("插上数据线并打开 USB 调试，电脑上的 SyncBoard 会自动启动手机服务。")
+        StepRow("1. 开发者选项", "在「关于手机」里连续点击版本号 7 次", dev) { go { DevOptions.openBuildNumber(ctx) } }
+        Divider()
+        StepRow("2. 无线调试", "手机和电脑连同一个 Wi-Fi", wifi, enabled = dev) {
+            if (DevOptions.enableWirelessDebugging(ctx)) wifi = DevOptions.wirelessDebuggingOn(ctx)
+            if (!wifi) go { DevOptions.openWirelessDebuggingSwitch(ctx) }
+        }
+        Divider()
+        ActionRow(
+            "3. 扫描电脑上的二维码",
+            "电脑 SyncBoard →「添加手机」→「无线」，然后在这里点「使用二维码配对设备」",
+            if (dev && wifi) p.ink else p.muted,
+        ) { go { DevOptions.openWirelessDebuggingPage(ctx) } }
+    }
+    SectionLabel("或者用数据线")
+    Group {
+        StepRow("USB 调试", "插上数据线，在手机弹窗中点「允许」，电脑上的 SyncBoard 会自动启动手机服务", usb, enabled = dev) {
+            go { DevOptions.openUsbDebuggingSwitch(ctx) }
+        }
+    }
+}
+
+@Composable
+private fun StepRow(title: String, subtitle: String, done: Boolean, enabled: Boolean = true, onOpen: () -> Unit) {
+    val p = LocalPalette.current
+    Row(Modifier.fillMaxWidth().padding(start = 16.dp, end = 8.dp, top = 10.dp, bottom = 10.dp), verticalAlignment = Alignment.CenterVertically) {
+        Column(Modifier.weight(1f)) {
+            Text(title, fontSize = 15.sp, color = if (enabled || done) p.ink else p.muted)
+            Text(subtitle, fontSize = 12.sp, color = p.muted, lineHeight = 16.sp)
+        }
+        if (done) {
+            Row(verticalAlignment = Alignment.CenterVertically, modifier = Modifier.padding(horizontal = 8.dp)) {
+                Dot(p.green, 7)
+                Spacer(Modifier.width(6.dp))
+                Text("已开启", fontSize = 13.sp, color = p.muted)
+            }
+        } else {
+            TextButton(onOpen, enabled = enabled) { Text("去开启", color = if (enabled) p.ink else p.muted, fontWeight = FontWeight.SemiBold) }
+        }
     }
 }
 
@@ -517,7 +594,8 @@ private fun SettingsScreen(
                 ActionRow("停止手机服务", "停止后台同步，直到下次由电脑或「一键启动」重新启动", p.danger) { confirmStop = true }
             }
         }
-        Text("SyncBoard ${appVersion(ctx)}", fontSize = 12.sp, color = p.muted, modifier = Modifier.padding(top = 24.dp, start = 4.dp))
+        SectionLabel("关于")
+        Group { UpdateRow(client, running = s != null) }
         Spacer(Modifier.height(24.dp))
     }
 
@@ -528,6 +606,96 @@ private fun SettingsScreen(
             text = { Text("剪贴板和文件将不再同步。", color = p.muted) },
             confirmButton = { TextButton({ confirmStop = false; client.cmd("stop") }) { Text("停止", color = p.danger) } },
             dismissButton = { TextButton({ confirmStop = false }) { Text("取消", color = p.ink) } },
+            containerColor = p.surface,
+        )
+    }
+}
+
+/** Version row with "检查更新": installs through the daemon, or opens the download otherwise. */
+@Composable
+private fun UpdateRow(client: DaemonClient, running: Boolean) {
+    val p = LocalPalette.current
+    val ctx = LocalContext.current
+    val current = remember { appVersion(ctx) }
+    var latest by remember { mutableStateOf<String?>(null) }
+    var status by remember { mutableStateOf<String?>(null) }
+    var busy by remember { mutableStateOf(false) }
+    var confirm by remember { mutableStateOf(false) }
+    var heardBack by remember { mutableStateOf(false) }
+    val scope = androidx.compose.runtime.rememberCoroutineScope()
+
+    fun openDownload(v: String) {
+        runCatching { ctx.startActivity(Intent(Intent.ACTION_VIEW, Uri.parse(app.syncboard.ipc.Releases.apkUrl(v)))) }
+        busy = false
+        status = "已在浏览器中下载，完成后点击安装"
+    }
+
+    LaunchedEffect(client) {
+        client.events.collect { ev ->
+            if (ev.optString("event") != "update") return@collect
+            heardBack = true
+            when (ev.optString("stage")) {
+                "downloading" -> status = "正在下载 v${ev.optString("version")}…"
+                "installing" -> status = "正在安装…（如手机弹出确认，请点「允许」）"
+                "done" -> status = "已更新，正在重启 SyncBoard"
+                "failed" -> { busy = false; status = ev.optString("reason") }
+            }
+        }
+    }
+
+    Row(Modifier.fillMaxWidth().padding(start = 16.dp, end = 8.dp, top = 10.dp, bottom = 10.dp), verticalAlignment = Alignment.CenterVertically) {
+        Column(Modifier.weight(1f)) {
+            Text("SyncBoard $current", fontSize = 15.sp)
+            Text(status ?: latest?.let { "有新版本 v$it" } ?: "从 GitHub 发布页检查新版本", fontSize = 12.sp, color = p.muted, lineHeight = 16.sp)
+        }
+        TextButton(
+            onClick = {
+                latest?.let { confirm = true; return@TextButton }
+                busy = true
+                status = "正在检查…"
+                thread {
+                    val r = runCatching { app.syncboard.ipc.Releases.latestVersion() }
+                    busy = false
+                    r.onSuccess { v ->
+                        if (app.syncboard.ipc.Releases.isNewer(v, current)) { latest = v; status = null; confirm = true }
+                        else status = "已是最新版本"
+                    }.onFailure { status = "检查失败：${it.message}" }
+                }
+            },
+            enabled = !busy,
+        ) { Text(if (latest != null) "更新" else "检查更新", color = if (busy) p.muted else p.ink, fontWeight = FontWeight.SemiBold) }
+    }
+
+    if (confirm) {
+        val v = latest!!
+        AlertDialog(
+            onDismissRequest = { confirm = false },
+            title = { Text("更新到 v$v？") },
+            text = {
+                Text(
+                    if (running) "将由手机服务下载并安装，完成后 SyncBoard 会自动重启。" else "手机服务未运行，将在浏览器中下载安装包。",
+                    color = p.muted,
+                )
+            },
+            confirmButton = {
+                TextButton({
+                    confirm = false
+                    busy = true
+                    heardBack = false
+                    if (running && client.cmd("selfUpdate", "version" to v)) {
+                        status = "正在准备…"
+                        // A service from before self-update ignores the command.
+                        scope.launch { kotlinx.coroutines.delay(4000); if (!heardBack) openDownload(v) }
+                    } else {
+                        openDownload(v)
+                    }
+                }) { Text("更新", color = p.ink) }
+            },
+            dismissButton = {
+                TextButton({ confirm = false; runCatching { ctx.startActivity(Intent(Intent.ACTION_VIEW, Uri.parse(app.syncboard.ipc.Releases.pageUrl(v)))) } }) {
+                    Text("查看发布说明", color = p.muted)
+                }
+            },
             containerColor = p.surface,
         )
     }

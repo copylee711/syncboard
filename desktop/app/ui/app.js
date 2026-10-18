@@ -5,6 +5,7 @@ const $ = (id) => document.getElementById(id);
 let state = null;
 let qrTimer = null;
 let currentReq = null;
+let available = null; // newer release version found by "检查更新"
 
 const PHONE_ICON = '<svg viewBox="0 0 24 24"><rect x="7" y="3" width="10" height="18" rx="2.5"/><path d="M11 18h2"/></svg>';
 
@@ -46,7 +47,9 @@ function render() {
   const s = state;
   applyTheme(s.settings.theme);
   $("syncToggle").checked = !s.paused;
-  $("syncLabel").textContent = s.paused ? "已暂停" : "同步中";
+  // A pause switch, not a status: nothing to pause until a phone is paired.
+  $("syncPill").hidden = !s.peers.length;
+  $("syncLabel").textContent = s.paused ? "同步已暂停" : "同步已开启";
 
   const online = s.peers.filter((p) => p.connected);
   const dot = $("statusDot");
@@ -93,6 +96,7 @@ function render() {
   $("autostart").checked = s.autostart;
   $("sendto").checked = s.sendto;
   $("downloadDir").textContent = s.downloadDir;
+  $("versionInfo").textContent = available ? `v${s.version} · 有新版本 v${available}` : `v${s.version}`;
   $("adbPath").textContent = s.adb ? `adb：${s.adb}` : "未找到 adb";
   $("ips").textContent = s.ips.join(" 或 ") || "（未检测到局域网地址）";
 
@@ -225,6 +229,28 @@ $("sendto").onchange = (e) =>
   call("set_sendto", { on: e.target.checked })
     .then(() => e.target.checked && toast("已添加：在文件上右键 → 发送到 → SyncBoard 手机"))
     .catch(refresh);
+$("updateBtn").onclick = async () => {
+  const btn = $("updateBtn");
+  btn.disabled = true;
+  try {
+    if (!available) {
+      btn.textContent = "正在检查…";
+      const r = await call("check_update");
+      if (!r.newer) return toast(`已是最新版本（v${r.current}）`);
+      available = r.latest;
+      render();
+      if (!confirm(`发现新版本 v${r.latest}（当前 v${r.current}）。现在下载并重启 SyncBoard？`)) return;
+    }
+    btn.textContent = "正在下载…";
+    await call("install_update", { version: available });
+  } catch {
+    // call() already showed the error
+  } finally {
+    btn.disabled = false;
+    btn.textContent = available ? `更新到 v${available}` : "检查更新";
+    btn.classList.toggle("ink", !!available);
+  }
+};
 $("adbBtn").onclick = async () => {
   $("adbBtn").disabled = true;
   try {

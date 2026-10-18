@@ -69,7 +69,13 @@ class DaemonClient(private val context: Context) {
                     while (running) {
                         val ev = readPlain(input)
                         when (ev.optString("event")) {
-                            "status" -> _conn.value = Conn.Running(ev)
+                            "status" -> {
+                                _conn.value = Conn.Running(ev)
+                                // Keep the cached wake list in step with pairing changes.
+                                val pcs = ev.optJSONArray("pcs")
+                                val ids = (0 until (pcs?.length() ?: 0)).map { pcs!!.getJSONObject(it).optString("id") }.toSet()
+                                if (ids != WakeInfo.pcIds(context)) send(JSONObject().put("cmd", "wakeInfo"))
+                            }
                             "wakeInfo" -> WakeInfo.save(context, ev)
                             "error" -> throw java.io.IOException(ev.optString("reason"))
                         }

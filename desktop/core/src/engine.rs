@@ -201,7 +201,10 @@ impl Engine {
     }
 
     pub fn unpair(&self, id: &str) -> Result<()> {
-        self.sessions.lock().unwrap().remove(id);
+        if let Some(s) = self.sessions.lock().unwrap().remove(id) {
+            // Lets the phone forget this PC too; it then closes the connection.
+            let _ = s.tx.try_send(Message::new(json!({"t":"unpaired"})));
+        }
         let mut s = self.store.lock().unwrap();
         s.config.peers.retain(|p| p.id != id);
         s.save()
@@ -293,28 +296,27 @@ impl Engine {
         match first.get("t").and_then(Value::as_str) {
             Some("pair") => self.handle_pair(stream, first).await,
             Some("hello") => self.handle_session(stream, addr, first).await,
-            Some("adb_wake") => self.handle_wake(addr, first),
+            Some("adb_wake") => self.handle_wake(stream, addr, first).await,
             other => bail!("unexpected first frame {other:?}"),
         }
     }
 
     /// `{"t":"adb_wake","id","port","ts","mac"}`, mac = HMAC(psk, "wake" ‖ port ‖ ts).
-    fn handle_wake(&self, addr: SocketAddr, v: Value) -> Result<()> {
+    /// Answers `wake_ok` or `wake_rejected` so the phone can stop waiting, and forget
+    /// this PC when it no longer knows the phone.
+    async fn handle_wake(&self, mut stream: TcpStream, addr: SocketAddr, v: Value) -> Result<()> {
         let id = v.get("id").and_then(Value::as_str).unwrap_or_default();
+        let Some(peer) = self.store.lock().unwrap().peer(id).cloned() else {
+            write_plain(&mut stream, &json!({"t":"wake_rejected","code":"unknown_device"})).await?;
+            bail!("wake from unknown device {id}");
+        };
+        if let Err(e) = verify_wake(&peer.psk, &v) {
+            write_plain(&mut stream, &json!({"t":"wake_rejected","code":"bad_request"})).await?;
+            return Err(e);
+        }
         let port = v.get("port").and_then(Value::as_u64).unwrap_or(0);
-        let ts = v.get("ts").and_then(Value::as_u64).unwrap_or(0);
-        let mac = B64.decode(v.get("mac").and_then(Value::as_str).unwrap_or_default())?;
-        let peer = self.store.lock().unwrap().peer(id).cloned().ok_or_else(|| anyhow!("unknown device"))?;
-        let now = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH)?.as_secs();
-        if now.abs_diff(ts) > 300 {
-            bail!("stale wake");
-        }
-        let psk = B64.decode(&peer.psk)?;
-        let want = crypto::hmac(&psk, &[b"wake", port.to_string().as_bytes(), ts.to_string().as_bytes()]);
-        if !crypto::ct_eq(&want, &mac) {
-            bail!("bad wake mac");
-        }
         self.emit(Event::AdbWake { id: peer.id, name: peer.name, addr: format!("{}:{port}", addr.ip()) });
+        write_plain(&mut stream, &json!({"t":"wake_ok"})).await?;
         Ok(())
     }
 
@@ -507,6 +509,12 @@ impl Engine {
                 let _ = tx.send(Message::new(json!({"t":"pong"}))).await;
             }
             "pong" | "auth" => {}
+            "unpaired" => {
+                // The phone removed this PC.
+                self.unpair(peer)?;
+                self.emit(Event::PeerDisconnected { id: peer.into() });
+                bail!("peer unpaired");
+            }
             "clip.text" => {
                 if remember(seen, &id) && m.body.len() <= MAX_TEXT {
                     let text = String::from_utf8_lossy(&m.body).into_owned();
@@ -697,6 +705,22 @@ pub fn local_ipv4s() -> Vec<String> {
         .collect();
     v.sort();
     v.into_iter().map(|(_, ip)| ip).collect()
+}
+
+fn verify_wake(psk_b64: &str, v: &Value) -> Result<()> {
+    let port = v.get("port").and_then(Value::as_u64).unwrap_or(0);
+    let ts = v.get("ts").and_then(Value::as_u64).unwrap_or(0);
+    let mac = B64.decode(v.get("mac").and_then(Value::as_str).unwrap_or_default())?;
+    let now = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH)?.as_secs();
+    if now.abs_diff(ts) > 300 {
+        bail!("stale wake");
+    }
+    let psk = B64.decode(psk_b64)?;
+    let want = crypto::hmac(&psk, &[b"wake", port.to_string().as_bytes(), ts.to_string().as_bytes()]);
+    if !crypto::ct_eq(&want, &mac) {
+        bail!("bad wake mac");
+    }
+    Ok(())
 }
 
 fn url_encode(s: &str) -> String {

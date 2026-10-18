@@ -140,3 +140,86 @@ async fn code_pairing_needs_acceptance() {
     client::connect_session(&addr, &me, &psk).await.unwrap();
     let _ = std::fs::remove_dir_all(dir);
 }
+
+#[tokio::test]
+async fn wake_is_answered_and_unpaired_phones_are_rejected() {
+    use base64::Engine as _;
+    use syncboard_core::frame::{read_plain, write_plain};
+    let b64 = base64::engine::general_purpose::STANDARD;
+    let dir = temp_dir();
+    let (tx, mut rx) = tokio::sync::mpsc::unbounded_channel();
+    let engine = Engine::start(&dir, 0, tx).await.unwrap();
+    let addr = format!("127.0.0.1:{}", engine.port());
+    let me = Identity { id: "phone3".into(), name: "P3".into() };
+    let p = client::parse_pair_uri(&engine.pairing_uri()).unwrap();
+    let (_, psk) = client::pair_qr(&addr, &me, &p.token).await.unwrap();
+
+    let wake = |psk: [u8; 32]| {
+        let ts = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap().as_secs();
+        let mac = crypto::hmac(&psk, &[b"wake", b"40000", ts.to_string().as_bytes()]);
+        json!({"t":"adb_wake","v":1,"id":"phone3","port":40000,"ts":ts,"mac":b64.encode(mac)})
+    };
+    let send = |v: serde_json::Value| {
+        let addr = addr.clone();
+        async move {
+            let mut s = tokio::net::TcpStream::connect(&addr).await.unwrap();
+            write_plain(&mut s, &v).await.unwrap();
+            read_plain(&mut s).await.unwrap()
+        }
+    };
+
+    assert_eq!(send(wake(psk)).await["t"], "wake_ok");
+    next_event(&mut rx, |e| matches!(e, Event::AdbWake { .. })).await;
+    assert_eq!(send(wake([9u8; 32])).await["code"], "bad_request");
+
+    engine.unpair("phone3").unwrap();
+    let r = send(wake(psk)).await;
+    assert_eq!((r["t"].as_str(), r["code"].as_str()), (Some("wake_rejected"), Some("unknown_device")));
+    let _ = std::fs::remove_dir_all(dir);
+}
+
+#[tokio::test]
+async fn unpair_tells_the_connected_phone() {
+    let dir = temp_dir();
+    let (tx, mut rx) = tokio::sync::mpsc::unbounded_channel();
+    let engine = Engine::start(&dir, 0, tx).await.unwrap();
+    let addr = format!("127.0.0.1:{}", engine.port());
+    let me = Identity { id: "phone4".into(), name: "P4".into() };
+    let p = client::parse_pair_uri(&engine.pairing_uri()).unwrap();
+    let (_, psk) = client::pair_qr(&addr, &me, &p.token).await.unwrap();
+    let (mut r, _w) = client::connect_session(&addr, &me, &psk).await.unwrap();
+    next_event(&mut rx, |e| matches!(e, Event::PeerConnected { .. })).await;
+
+    engine.unpair("phone4").unwrap();
+    let m = tokio::time::timeout(Duration::from_secs(5), async {
+        loop {
+            let m = r.read().await.unwrap();
+            if m.kind() != "ping" {
+                return m;
+            }
+        }
+    })
+    .await
+    .unwrap();
+    assert_eq!(m.kind(), "unpaired");
+    assert!(client::connect_session(&addr, &me, &psk).await.is_err());
+    let _ = std::fs::remove_dir_all(dir);
+}
+
+#[tokio::test]
+async fn phone_unpair_removes_it_on_the_pc() {
+    let dir = temp_dir();
+    let (tx, mut rx) = tokio::sync::mpsc::unbounded_channel();
+    let engine = Engine::start(&dir, 0, tx).await.unwrap();
+    let addr = format!("127.0.0.1:{}", engine.port());
+    let me = Identity { id: "phone5".into(), name: "P5".into() };
+    let p = client::parse_pair_uri(&engine.pairing_uri()).unwrap();
+    let (_, psk) = client::pair_qr(&addr, &me, &p.token).await.unwrap();
+    let (_r, mut w) = client::connect_session(&addr, &me, &psk).await.unwrap();
+    next_event(&mut rx, |e| matches!(e, Event::PeerConnected { .. })).await;
+
+    w.write(&Message::new(json!({"t":"unpaired"}))).await.unwrap();
+    next_event(&mut rx, |e| matches!(e, Event::PeerDisconnected { .. })).await;
+    assert!(engine.peers().is_empty());
+    let _ = std::fs::remove_dir_all(dir);
+}

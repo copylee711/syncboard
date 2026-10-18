@@ -111,7 +111,11 @@ class Engine(
 
     fun unpair(id: String) {
         loops.remove(id)?.shutdown()
-        sessions.remove(id)?.close()
+        sessions.remove(id)?.let { s ->
+            // Lets the PC forget this phone too (ignored when the PC removed us first).
+            runCatching { s.writer.write(Message.of("t" to "unpaired")) }
+            s.close()
+        }
         config.remove(id)
         pushStatus()
     }
@@ -413,6 +417,11 @@ class Engine(
             val id = m.str("id")
             when (m.kind) {
                 "ping" -> io.execute { runCatching { writer.write(Message.of("t" to "pong")) } }
+                "unpaired" -> {
+                    Log.i(TAG, "${pc.name} removed this phone")
+                    emit(JSONObject().put("event", "unpairedByPc").put("name", pc.name))
+                    io.execute { unpair(pc.id) }
+                }
                 "service.stop" -> {
                     Log.i(TAG, "stopped by ${pc.name}")
                     emit(JSONObject().put("event", "stopping"))

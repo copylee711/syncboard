@@ -12,6 +12,20 @@ object WakeInfo {
             .putString("info", info.toString()).apply()
     }
 
+    /** Drops PCs that said they removed this phone. */
+    fun forget(context: Context, pcIds: Set<String>) {
+        val info = load(context) ?: return
+        val pcs = info.getJSONArray("pcs")
+        val kept = org.json.JSONArray()
+        for (i in 0 until pcs.length()) pcs.getJSONObject(i).takeIf { it.optString("id") !in pcIds }?.let(kept::put)
+        save(context, info.put("pcs", kept))
+    }
+
+    fun pcIds(context: Context): Set<String> {
+        val pcs = load(context)?.optJSONArray("pcs") ?: return emptySet()
+        return (0 until pcs.length()).map { pcs.getJSONObject(it).optString("id") }.toSet()
+    }
+
     fun load(context: Context): JSONObject? =
         context.getSharedPreferences(PREFS, Context.MODE_PRIVATE).getString("info", null)
             ?.let { runCatching { JSONObject(it) }.getOrNull() }

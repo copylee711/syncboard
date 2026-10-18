@@ -15,9 +15,12 @@ import android.provider.Settings
 import android.util.Base64
 import android.util.Log
 import app.syncboard.proto.Crypto
+import app.syncboard.proto.readPlain
 import app.syncboard.proto.writePlain
 import org.json.JSONObject
+import java.io.BufferedInputStream
 import java.io.BufferedOutputStream
+import java.io.DataInputStream
 import java.io.DataOutputStream
 import java.net.InetSocketAddress
 import java.net.Socket
@@ -36,6 +39,8 @@ object Recovery {
         data object Started : Result
         data object NoWifiDebugging : Result
         data object NoPc : Result
+        /** Every paired PC answered that it removed this phone; it must be set up again. */
+        data object Forgotten : Result
         data class Failed(val reason: String) : Result
     }
 
@@ -60,7 +65,12 @@ object Recovery {
         }
         try {
             val port = findAdbPort(ctx, 15_000) ?: return Result.Failed("没有找到无线调试端口（手机需要连接 Wi-Fi）")
-            if (!wakeAnyPc(info, port)) return Result.Failed("联系不到电脑，请确认电脑上的 SyncBoard 正在运行")
+            when (wakeAnyPc(ctx, info, port)) {
+                Wake.Sent -> {}
+                Wake.Forgotten -> return Result.Forgotten
+                Wake.Refused -> return Result.Failed("电脑拒绝了启动请求，请在电脑上重新添加手机")
+                Wake.Unreachable -> return Result.Failed("联系不到电脑，请确认电脑上的 SyncBoard 正在运行")
+            }
             val deadline = System.currentTimeMillis() + 45_000
             while (System.currentTimeMillis() < deadline) {
                 if (daemonUp()) return Result.Started
@@ -107,9 +117,20 @@ object Recovery {
         return port
     }
 
-    private fun wakeAnyPc(info: JSONObject, adbPort: Int): Boolean {
+    private enum class Wake { Sent, Forgotten, Refused, Unreachable }
+
+    /**
+     * Asks each paired PC in turn to start the daemon. PCs that answer `unknown_device`
+     * removed this phone, so they are dropped from [WakeInfo].
+     */
+    private fun wakeAnyPc(ctx: Context, info: JSONObject, adbPort: Int): Wake {
         val pcs = info.getJSONArray("pcs")
-        var ok = false
+        val forgotten = mutableSetOf<String>()
+        var reached = false
+        fun done(r: Wake): Wake {
+            if (forgotten.isNotEmpty()) WakeInfo.forget(ctx, forgotten)
+            return r
+        }
         for (i in 0 until pcs.length()) {
             val pc = pcs.getJSONObject(i)
             val psk = Base64.decode(pc.getString("psk"), Base64.NO_WRAP)
@@ -119,19 +140,31 @@ object Recovery {
                 if (host == "127.0.0.1") continue
                 val ts = System.currentTimeMillis() / 1000
                 val mac = Crypto.hmac(psk, "wake".toByteArray(), adbPort.toString().toByteArray(), ts.toString().toByteArray())
-                val sent = runCatching {
+                val reply = runCatching {
                     Socket().use { s ->
                         s.connect(InetSocketAddress(host, pc.optInt("port", 53317)), 3000)
+                        s.soTimeout = 5000
                         writePlain(DataOutputStream(BufferedOutputStream(s.getOutputStream())), JSONObject()
                             .put("t", "adb_wake").put("v", 1).put("id", info.getString("deviceId"))
                             .put("port", adbPort).put("ts", ts).put("mac", Base64.encodeToString(mac, Base64.NO_WRAP)))
+                        // Older PCs close without answering.
+                        runCatching { readPlain(DataInputStream(BufferedInputStream(s.getInputStream()))) }
+                            .getOrDefault(JSONObject().put("t", "wake_ok"))
                     }
-                }.isSuccess
-                Log.d(TAG, "wake $host: $sent")
-                if (sent) { ok = true; break }
+                }.getOrNull()
+                Log.d(TAG, "wake $host: $reply")
+                if (reply == null) continue
+                if (reply.optString("t") == "wake_ok") return done(Wake.Sent)
+                if (reply.optString("code") == "unknown_device") forgotten += pc.getString("id")
+                reached = true
+                break
             }
         }
-        return ok
+        return done(when {
+            forgotten.size == pcs.length() -> Wake.Forgotten
+            reached -> Wake.Refused
+            else -> Wake.Unreachable
+        })
     }
 
     // ---- scheduling after boot ----
@@ -172,6 +205,8 @@ object AppPrefs {
     fun setAutoRecover(ctx: Context, v: Boolean) = p(ctx).edit().putBoolean("autoRecover", v).apply()
     fun theme(ctx: Context): String = p(ctx).getString("theme", "system") ?: "system"
     fun setTheme(ctx: Context, v: String) = p(ctx).edit().putString("theme", v).apply()
+    fun askedNotify(ctx: Context) = p(ctx).getBoolean("askedNotify", false)
+    fun setAskedNotify(ctx: Context) = p(ctx).edit().putBoolean("askedNotify", true).apply()
     fun hideFromRecents(ctx: Context) = p(ctx).getBoolean("hideRecents", false)
     fun setHideFromRecents(ctx: Context, v: Boolean) = p(ctx).edit().putBoolean("hideRecents", v).apply()
 }

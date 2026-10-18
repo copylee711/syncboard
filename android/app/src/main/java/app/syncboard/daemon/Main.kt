@@ -22,7 +22,7 @@ object Main {
             "[ -n \"\$p\" ] && CLASSPATH=\$p nohup setsid app_process /system/bin --nice-name=$NICE_NAME " +
             "app.syncboard.daemon.Main </dev/null >/dev/null 2>&1 &"
 
-    private val stateDir = File("/data/local/tmp/syncboard")
+    val stateDir = File("/data/local/tmp/syncboard")
     private val downloadDir = File("/storage/emulated/0/Download/SyncBoard")
 
     @JvmStatic
