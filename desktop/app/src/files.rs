@@ -49,8 +49,10 @@ fn ms(t: std::io::Result<std::time::SystemTime>) -> u64 {
 
 // ---------- this PC ----------
 
+/// Async on purpose: creating a window from a synchronous command deadlocks WebView2 on
+/// Windows (the new window stays blank).
 #[tauri::command]
-pub fn open_files(app: AppHandle) {
+pub async fn open_files(app: AppHandle) {
     show(&app);
 }
 

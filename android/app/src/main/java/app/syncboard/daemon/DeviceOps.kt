@@ -52,8 +52,9 @@ object DeviceOps {
     @Volatile private var ringing: Thread? = null
 
     /**
-     * Beeps loudly on the alarm stream for up to a minute (or until stopped), so a phone
-     * on silent can still be found; the alarm volume is put back afterwards.
+     * Beeps loudly on the alarm stream for up to a minute, so a phone on silent can still
+     * be found; stops when the PC says so or a volume key is pressed on the phone. The alarm
+     * volume is put back afterwards, unless the user changed it.
      */
     private fun ring(ctx: android.content.Context, stop: Boolean): JSONObject {
         ringing?.interrupt()
@@ -64,10 +65,17 @@ object DeviceOps {
             val before = runCatching { am.getStreamVolume(AudioManager.STREAM_ALARM) }.getOrNull()
             runCatching { am.setStreamVolume(AudioManager.STREAM_ALARM, am.getStreamMaxVolume(AudioManager.STREAM_ALARM), 0) }
                 .onFailure { Log.w(TAG, "ring: cannot raise alarm volume", it) }
+            val loud = runCatching { am.getStreamVolume(AudioManager.STREAM_ALARM) }.getOrNull()
             val tone = runCatching { ToneGenerator(AudioManager.STREAM_ALARM, ToneGenerator.MAX_VOLUME) }.getOrNull()
+            // Someone pressed a volume key on the phone: it was found, and their volume stays.
+            var touched = false
             try {
                 val end = System.currentTimeMillis() + 60_000
-                while (System.currentTimeMillis() < end) {
+                while (System.currentTimeMillis() < end && ringing === Thread.currentThread()) {
+                    if (loud != null && runCatching { am.getStreamVolume(AudioManager.STREAM_ALARM) }.getOrNull() != loud) {
+                        touched = true
+                        break
+                    }
                     tone?.startTone(ToneGenerator.TONE_CDMA_HIGH_PBX_L, 900)
                     sh("cmd", "vibrator_manager", "synced", "oneshot", "600")
                     Thread.sleep(1200)
@@ -76,7 +84,7 @@ object DeviceOps {
             } finally {
                 tone?.stopTone()
                 tone?.release()
-                if (before != null) runCatching { am.setStreamVolume(AudioManager.STREAM_ALARM, before, 0) }
+                if (before != null && !touched) runCatching { am.setStreamVolume(AudioManager.STREAM_ALARM, before, 0) }
             }
         }, "ring")
         ringing = t
