@@ -382,8 +382,31 @@ private fun ServiceDown() {
     val p = LocalPalette.current
     val ctx = LocalContext.current
     var known by remember { mutableStateOf(WakeInfo.load(ctx) != null) }
+    // Set up once over adb: the app can switch the debugging options itself, so starting
+    // the service needs no taps at all.
+    val oneTap = known && Recovery.canToggleWifiDebugging(ctx)
     var busy by remember { mutableStateOf(false) }
     var message by remember { mutableStateOf<String?>(null) }
+    var showSetup by remember { mutableStateOf(false) }
+
+    fun start() {
+        busy = true
+        message = null
+        thread {
+            val r = Recovery.run(ctx.applicationContext)
+            busy = false
+            when (r) {
+                Recovery.Result.Started -> {}
+                Recovery.Result.NoPc, Recovery.Result.Forgotten -> {
+                    known = false
+                    message = if (r == Recovery.Result.Forgotten) "电脑已移除这台手机，请按下面的步骤重新添加。" else null
+                }
+                Recovery.Result.NoWifiDebugging -> message = "请先打开「无线调试」（见下方），再点一键启动。"
+                is Recovery.Result.Failed -> message = r.reason
+            }
+        }
+    }
+    LaunchedEffect(oneTap) { if (oneTap && !busy && !AppPrefs.userStopped(ctx)) start() }
 
     Row(verticalAlignment = Alignment.CenterVertically, modifier = Modifier.padding(top = 12.dp)) {
         Dot(p.amber)
@@ -391,41 +414,34 @@ private fun ServiceDown() {
         Text("手机服务未运行", fontSize = 13.sp, color = p.muted)
     }
     Text(
-        if (known) "服务需要重新启动" else "在电脑上添加这台手机",
+        when {
+            oneTap && busy -> "正在启动手机服务…"
+            known -> "服务需要重新启动"
+            else -> "在电脑上添加这台手机"
+        },
         style = androidx.compose.material3.MaterialTheme.typography.headlineSmall, modifier = Modifier.padding(top = 10.dp),
     )
     Text(
-        if (known) {
-            "手机重启后，后台同步服务会停止。SyncBoard 可以通过「无线调试」请电脑重新启动它，不需要数据线。"
-        } else {
-            "SyncBoard 的后台服务需要电脑帮忙启动一次：在电脑上打开 SyncBoard，点「添加手机」进入第 2 步「扫码连接」，再按下面的步骤操作，其余步骤会自动完成。"
+        when {
+            oneTap -> "SyncBoard 会临时打开无线调试，请电脑启动后台服务${if (AppPrefs.autoDisableDev(ctx)) "，完成后关闭开发者选项" else ""}。需要电脑上的 SyncBoard 正在运行，并和手机在同一网络。"
+            known -> "手机重启后，后台同步服务会停止。SyncBoard 可以通过「无线调试」请电脑重新启动它，不需要数据线。"
+            else -> "SyncBoard 的后台服务需要电脑帮忙启动一次：在电脑上打开 SyncBoard，点「添加手机」进入第 2 步「扫码连接」，再按下面的步骤操作，其余步骤会自动完成。"
         },
         fontSize = 14.sp, color = p.muted, lineHeight = 21.sp, modifier = Modifier.padding(top = 6.dp),
     )
     if (known) {
         Spacer(Modifier.height(20.dp))
-        InkButton(if (busy) "正在启动…" else "一键启动", Modifier.fillMaxWidth(), enabled = !busy) {
-            busy = true
-            message = null
-            thread {
-                val r = Recovery.run(ctx.applicationContext)
-                busy = false
-                when (r) {
-                    Recovery.Result.Started -> {}
-                    Recovery.Result.NoPc, Recovery.Result.Forgotten -> {
-                        known = false
-                        message = if (r == Recovery.Result.Forgotten) "电脑已移除这台手机，请按下面的步骤重新添加。" else null
-                    }
-                    Recovery.Result.NoWifiDebugging -> message = "请先打开「无线调试」（见下方），再点一键启动。"
-                    is Recovery.Result.Failed -> message = r.reason
-                }
-            }
-        }
+        InkButton(if (busy) "正在启动…" else if (oneTap && message != null) "重试" else "一键启动", Modifier.fillMaxWidth(), enabled = !busy) { start() }
     }
     message?.let { Text(it, color = p.danger, fontSize = 13.sp, modifier = Modifier.padding(top = 12.dp)) }
 
-    SectionLabel(if (known) "或者重新添加" else "手机上的准备")
-    PhoneSetupSteps()
+    if (oneTap && !showSetup) {
+        // The checklist is only for pairing again; keep it out of the way.
+        TextButton({ showSetup = true }, modifier = Modifier.padding(top = 12.dp)) { Text("重新配对 ›", color = p.muted) }
+    } else {
+        SectionLabel(if (known) "或者重新添加" else "手机上的准备")
+        PhoneSetupSteps()
+    }
 }
 
 /**
@@ -572,6 +588,7 @@ private fun SettingsScreen(
     fun set(key: String, v: Boolean) = client.send(JSONObject().put("cmd", "settings").put("settings", JSONObject().put(key, v)))
     var hideRecents by remember { mutableStateOf(AppPrefs.hideFromRecents(ctx)) }
     var autoRecover by remember { mutableStateOf(AppPrefs.autoRecover(ctx)) }
+    var autoDisableDev by remember { mutableStateOf(AppPrefs.autoDisableDev(ctx)) }
     var confirmStop by remember { mutableStateOf(false) }
 
     Column(
@@ -609,6 +626,16 @@ private fun SettingsScreen(
                 hideRecents = it
                 AppPrefs.setHideFromRecents(ctx, it)
                 activity?.applyRecents()
+            }
+            Divider()
+            ToggleRow(
+                "启动后关闭开发者选项", autoDisableDev,
+                "系统不建议一直开着。需要启动服务时，SyncBoard 会临时打开再关闭（需要先用电脑完成一次设置）",
+                enabled = Recovery.canToggleWifiDebugging(ctx),
+            ) {
+                autoDisableDev = it
+                AppPrefs.setAutoDisableDev(ctx, it)
+                set("autoDisableDevOptions", it)
             }
             Divider()
             ToggleRow(

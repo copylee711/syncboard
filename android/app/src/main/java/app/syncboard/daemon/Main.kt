@@ -49,7 +49,7 @@ object Main {
         val ipc = try {
             IpcServer.bind { appUid(ctx) }
         } catch (e: Exception) {
-            if (pairUri != null) IpcServer.sendTo(JSONObject().put("cmd", "pairQr").put("uri", pairUri))
+            if (pairUri != null) IpcServer.sendTo(JSONObject().put("cmd", "pairQr").put("uri", pairUri).put("viaAdb", true))
             println("SyncBoard daemon already running")
             exitProcess(0)
         }
@@ -61,7 +61,7 @@ object Main {
         val engine = Engine(config, bridge, downloadDir) { ipc.broadcast(it) }
         ipc.start(engine, bridge)
         engine.start()
-        pairUri?.let { engine.pairQr(it) }
+        pairUri?.let { engine.pairQr(it, viaAdb = true) }
         watchApk()
         println("SyncBoard daemon running, pid ${Process.myPid()}")
         Log.i(Engine.TAG, "daemon started, pid ${Process.myPid()}")

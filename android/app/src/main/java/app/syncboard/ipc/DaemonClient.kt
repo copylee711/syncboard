@@ -48,9 +48,16 @@ class DaemonClient(private val context: Context) {
         thread?.interrupt()
     }
 
+    /** Writes happen off the caller's thread: the UI calls this, and Android refuses socket I/O on the main thread. */
+    private val writer = java.util.concurrent.Executors.newSingleThreadExecutor()
+
     fun send(cmd: JSONObject): Boolean {
         val o = out ?: return false
-        return runCatching { writePlain(o, cmd) }.isSuccess
+        writer.execute {
+            runCatching { synchronized(o) { writePlain(o, cmd) } }
+                .onFailure { android.util.Log.w("SyncBoard", "ipc send ${cmd.optString("cmd")} failed", it) }
+        }
+        return true
     }
 
     fun cmd(name: String, vararg kv: Pair<String, Any?>): Boolean =
@@ -71,12 +78,16 @@ class DaemonClient(private val context: Context) {
                         when (ev.optString("event")) {
                             "status" -> {
                                 _conn.value = Conn.Running(ev)
+                                AppPrefs.setUserStopped(context, false)
+                                ev.optJSONObject("settings")?.takeIf { it.has("autoDisableDevOptions") }
+                                    ?.let { AppPrefs.setAutoDisableDev(context, it.getBoolean("autoDisableDevOptions")) }
                                 // Keep the cached wake list in step with pairing changes.
                                 val pcs = ev.optJSONArray("pcs")
                                 val ids = (0 until (pcs?.length() ?: 0)).map { pcs!!.getJSONObject(it).optString("id") }.toSet()
                                 if (ids != WakeInfo.pcIds(context)) send(JSONObject().put("cmd", "wakeInfo"))
                             }
                             "wakeInfo" -> WakeInfo.save(context, ev)
+                            "stopping" -> AppPrefs.setUserStopped(context, true)
                             "error" -> throw java.io.IOException(ev.optString("reason"))
                         }
                         events.tryEmit(ev)

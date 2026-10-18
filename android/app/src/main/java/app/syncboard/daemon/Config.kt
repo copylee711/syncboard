@@ -46,11 +46,18 @@ class Settings(
     var hideAccessToast: Boolean = true,
     /** Put new screenshots on the phone and PC clipboards. */
     var copyScreenshots: Boolean = false,
+    /**
+     * Switch developer options off once a PC has set this phone up over adb (the system
+     * advises against leaving them on). The app switches them on briefly whenever the
+     * service has to be restarted.
+     */
+    var autoDisableDevOptions: Boolean = true,
 ) {
     fun toJson(): JSONObject = JSONObject()
         .put("syncText", syncText).put("syncImages", syncImages)
         .put("autoAcceptFiles", autoAcceptFiles).put("paused", paused)
         .put("hideAccessToast", hideAccessToast).put("copyScreenshots", copyScreenshots)
+        .put("autoDisableDevOptions", autoDisableDevOptions)
 
     fun update(o: JSONObject) {
         if (o.has("syncText")) syncText = o.getBoolean("syncText")
@@ -59,6 +66,7 @@ class Settings(
         if (o.has("paused")) paused = o.getBoolean("paused")
         if (o.has("hideAccessToast")) hideAccessToast = o.getBoolean("hideAccessToast")
         if (o.has("copyScreenshots")) copyScreenshots = o.getBoolean("copyScreenshots")
+        if (o.has("autoDisableDevOptions")) autoDisableDevOptions = o.getBoolean("autoDisableDevOptions")
     }
 }
 

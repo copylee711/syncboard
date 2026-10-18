@@ -110,6 +110,15 @@ class Engine(
         pushStatus()
     }
 
+    private fun disableDevOptionsSoon() = Thread {
+        // Let the PC finish with adb first; the daemon itself doesn't need it.
+        Thread.sleep(3000)
+        Log.i(TAG, "paired over adb, switching developer options off")
+        for (key in listOf("adb_wifi_enabled", "development_settings_enabled")) {
+            runCatching { ProcessBuilder("settings", "put", "global", key, "0").start().waitFor() }
+        }
+    }.start()
+
     fun unpair(id: String) {
         loops.remove(id)?.shutdown()
         sessions.remove(id)?.let { s ->
@@ -206,7 +215,12 @@ class Engine(
 
     // ---- pairing ----
 
-    fun pairQr(uri: String) = io.execute {
+    /**
+     * [viaAdb]: a PC started us over adb to pair. Once paired, developer options can go
+     * off again (see [Settings.autoDisableDevOptions]); not when the pairing went through
+     * the USB cable's reverse tunnel, which needs adb to stay up.
+     */
+    fun pairQr(uri: String, viaAdb: Boolean = false) = io.execute {
         try {
             val q = android.net.Uri.parse(uri)
             val hosts = q.getQueryParameter("h").orEmpty().split(',').filter { it.isNotBlank() }
@@ -217,6 +231,7 @@ class Engine(
             for (host in hosts) {
                 try {
                     pairWith(host, port, "qr", token, hosts)
+                    if (viaAdb && host != "127.0.0.1" && config.settings.autoDisableDevOptions) disableDevOptionsSoon()
                     return@execute
                 } catch (e: PairRejected) {
                     throw e

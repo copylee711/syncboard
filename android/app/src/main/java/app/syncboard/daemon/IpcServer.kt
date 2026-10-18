@@ -114,7 +114,7 @@ class IpcServer private constructor(private val server: ServerSocket, private va
     private fun handle(req: JSONObject, out: DataOutputStream) {
         when (req.optString("cmd")) {
             "status" -> writePlain(out, engine.status())
-            "pairQr" -> engine.pairQr(req.getString("uri"))
+            "pairQr" -> engine.pairQr(req.getString("uri"), req.optBoolean("viaAdb"))
             "pairCode" -> engine.pairCode(req.getString("host"), req.optInt("port", Config.PORT))
             "unpair" -> engine.unpair(req.getString("id"))
             "settings" -> engine.updateSettings(req.getJSONObject("settings"))

@@ -53,7 +53,8 @@ object Recovery {
         Socket().use { it.connect(InetSocketAddress("127.0.0.1", DaemonClient.PORT), 500) }
     }.isSuccess
 
-    /** Blocking; call off the main thread. */
+    /** Blocking; call off the main thread. One at a time: a second caller waits and then finds the daemon up. */
+    @Synchronized
     fun run(ctx: Context): Result {
         if (daemonUp()) return Result.Started
         val info = WakeInfo.load(ctx) ?: return Result.NoPc
@@ -84,9 +85,11 @@ object Recovery {
             return Result.Failed("电脑没有完成启动，请检查电脑端 SyncBoard")
         } finally {
             // The daemon is detached from adbd, so wireless debugging can go off again.
-            if (weEnabled || weEnabledDev) Thread.sleep(1500)
-            if (weEnabled) Settings.Global.putInt(ctx.contentResolver, ADB_WIFI, 0)
-            if (weEnabledDev) Settings.Global.putInt(ctx.contentResolver, Settings.Global.DEVELOPMENT_SETTINGS_ENABLED, 0)
+            // With 配对后关闭开发者选项 on, leave them off even if they were on before.
+            val offAfter = AppPrefs.autoDisableDev(ctx) && canToggleWifiDebugging(ctx)
+            if (weEnabled || weEnabledDev || offAfter) Thread.sleep(1500)
+            if (weEnabled || offAfter) Settings.Global.putInt(ctx.contentResolver, ADB_WIFI, 0)
+            if (weEnabledDev || offAfter) Settings.Global.putInt(ctx.contentResolver, Settings.Global.DEVELOPMENT_SETTINGS_ENABLED, 0)
         }
     }
 
@@ -234,6 +237,12 @@ object AppPrefs {
     fun setAutoRecover(ctx: Context, v: Boolean) = p(ctx).edit().putBoolean("autoRecover", v).apply()
     fun theme(ctx: Context): String = p(ctx).getString("theme", "system") ?: "system"
     fun setTheme(ctx: Context, v: String) = p(ctx).edit().putString("theme", v).apply()
+    /** The user stopped the service (here or from the PC): don't start it again by itself. */
+    fun userStopped(ctx: Context) = p(ctx).getBoolean("userStopped", false)
+    fun setUserStopped(ctx: Context, v: Boolean) = p(ctx).edit().putBoolean("userStopped", v).apply()
+    /** Mirror of the daemon's autoDisableDevOptions, for when the daemon isn't running. */
+    fun autoDisableDev(ctx: Context) = p(ctx).getBoolean("autoDisableDev", true)
+    fun setAutoDisableDev(ctx: Context, v: Boolean) = p(ctx).edit().putBoolean("autoDisableDev", v).apply()
     fun askedNotify(ctx: Context) = p(ctx).getBoolean("askedNotify", false)
     fun setAskedNotify(ctx: Context) = p(ctx).edit().putBoolean("askedNotify", true).apply()
     fun hideFromRecents(ctx: Context) = p(ctx).getBoolean("hideRecents", false)
