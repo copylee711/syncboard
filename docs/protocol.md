@@ -76,7 +76,21 @@ u32 hlen | hlen bytes JSON header | body bytes (rest)
 ```
 
 The first message in each direction is `{"t":"auth","name":..,"platform":..}`. Successfully
-decrypting it proves the peer knows `psk`.
+decrypting it proves the peer knows `psk`. Each side sends its `auth` right after deriving the
+keys, without waiting for the other's, so both sides always receive one.
+
+**Stale pairings.** Nothing new goes on the wire for these; each side detects them on its own,
+so older peers interoperate (they just keep retrying as before):
+
+- The phone checks the `id` in the PC's `hello` against the PC id it paired with. A different
+  id means another PC, or the same PC after its config was reset, now answers at that
+  address. If no known address or LAN discovery (§5) reaches the right id, the phone treats it
+  like `unknown_device` and asks the user to pair again.
+- If the peer's `auth` record fails AES-GCM authentication (as opposed to a closed or timed-out
+  connection), the two sides hold different `psk`s for each other: one of them was re-paired
+  without the other. The PC reports a `keyMismatch` for that phone, the phone shows the PC as
+  needing re-pairing, and it retries only every 60 s. Pairing again (§2) replaces the psk on
+  both sides.
 
 ## 4. Messages
 

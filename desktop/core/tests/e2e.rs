@@ -223,3 +223,29 @@ async fn phone_unpair_removes_it_on_the_pc() {
     assert!(engine.peers().is_empty());
     let _ = std::fs::remove_dir_all(dir);
 }
+
+#[tokio::test]
+async fn wrong_psk_is_reported_as_key_mismatch() {
+    let dir = temp_dir();
+    let (tx, mut rx) = tokio::sync::mpsc::unbounded_channel();
+    let engine = Engine::start(&dir, 0, tx).await.unwrap();
+    let addr = format!("127.0.0.1:{}", engine.port());
+    let me = Identity { id: "phone6".into(), name: "P6".into() };
+    let p = client::parse_pair_uri(&engine.pairing_uri()).unwrap();
+    let (_, psk) = client::pair_qr(&addr, &me, &p.token).await.unwrap();
+
+    // The phone holds a stale key: both ends fail to open the other's auth record.
+    let err = client::connect_session(&addr, &me, &[7u8; 32]).await.err().expect("wrong psk must fail");
+    assert!(err.is::<crypto::DecryptError>(), "{err:#}");
+    match next_event(&mut rx, |e| matches!(e, Event::KeyMismatch { .. })).await {
+        Event::KeyMismatch { id, .. } => assert_eq!(id, "phone6"),
+        _ => unreachable!(),
+    }
+    assert!(engine.key_mismatch("phone6"));
+
+    // The right key connects again and clears the flag.
+    let _s = client::connect_session(&addr, &me, &psk).await.unwrap();
+    next_event(&mut rx, |e| matches!(e, Event::PeerConnected { .. })).await;
+    assert!(!engine.key_mismatch("phone6"));
+    let _ = std::fs::remove_dir_all(dir);
+}

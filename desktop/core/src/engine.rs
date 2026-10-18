@@ -11,7 +11,7 @@ use base64::Engine as _;
 use serde::Serialize;
 use serde_json::{json, Value};
 use sha2::{Digest, Sha256};
-use std::collections::{HashMap, VecDeque};
+use std::collections::{HashMap, HashSet, VecDeque};
 use std::net::SocketAddr;
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicU64, Ordering};
@@ -61,6 +61,9 @@ pub enum Event {
     /// A paired phone rebooted and turned on wireless debugging; the app should
     /// `adb connect` to `addr` and start the daemon.
     AdbWake { id: String, name: String, addr: String },
+    /// A paired phone connected but its session key doesn't match ours (one side
+    /// was re-paired or reset); the user has to pair it again.
+    KeyMismatch { id: String, name: String },
 }
 
 struct Session {
@@ -89,6 +92,8 @@ pub struct Engine {
     tokens: Mutex<Vec<([u8; 32], Instant)>>,
     pending_pairs: Mutex<HashMap<u64, oneshot::Sender<bool>>>,
     outbound: Mutex<HashMap<String, Outbound>>,
+    /// Peers whose last handshake failed with a key mismatch.
+    key_mismatch: Mutex<HashSet<String>>,
     next: AtomicU64,
     port: u16,
 }
@@ -110,6 +115,7 @@ impl Engine {
             tokens: Mutex::new(Vec::new()),
             pending_pairs: Mutex::new(HashMap::new()),
             outbound: Mutex::new(HashMap::new()),
+            key_mismatch: Mutex::new(HashSet::new()),
             next: AtomicU64::new(1),
             port,
         });
@@ -171,6 +177,11 @@ impl Engine {
             .collect()
     }
 
+    /// True when `id`'s last connection attempt failed because the pairing keys differ.
+    pub fn key_mismatch(&self, id: &str) -> bool {
+        self.key_mismatch.lock().unwrap().contains(id)
+    }
+
     /// Creates a fresh single-use pairing token and returns the QR payload.
     pub fn pairing_uri(&self) -> String {
         let token = crypto::random_bytes::<32>();
@@ -205,6 +216,7 @@ impl Engine {
             // Lets the phone forget this PC too; it then closes the connection.
             let _ = s.tx.try_send(Message::new(json!({"t":"unpaired"})));
         }
+        self.key_mismatch.lock().unwrap().remove(id);
         let mut s = self.store.lock().unwrap();
         s.config.peers.retain(|p| p.id != id);
         s.save()
@@ -398,6 +410,7 @@ impl Engine {
             });
             s.save()?;
         }
+        self.key_mismatch.lock().unwrap().remove(&peer_id);
         let _ = stream.shutdown().await;
         self.emit(Event::Paired { id: peer_id, name: peer_name });
         Ok(())
@@ -425,10 +438,22 @@ impl Engine {
         writer
             .write(&Message::new(json!({"t":"auth","name":self.device_name(),"platform":"windows"})))
             .await?;
-        let auth = tokio::time::timeout(Duration::from_secs(10), reader.read()).await??;
+        let auth = match tokio::time::timeout(Duration::from_secs(10), reader.read()).await? {
+            Ok(m) => m,
+            Err(e) if e.is::<crypto::DecryptError>() => {
+                // The phone's record doesn't open with our key: it holds a different
+                // psk for us. It sees the same on its side and stops retrying.
+                if self.key_mismatch.lock().unwrap().insert(peer_id.clone()) {
+                    self.emit(Event::KeyMismatch { id: peer_id.clone(), name: peer.name.clone() });
+                }
+                bail!("key mismatch with {peer_id}");
+            }
+            Err(e) => return Err(e),
+        };
         if auth.kind() != "auth" {
             bail!("expected auth");
         }
+        self.key_mismatch.lock().unwrap().remove(&peer_id);
 
         let (tx, mut rx) = mpsc::channel::<Message>(32);
         let gen = self.next.fetch_add(1, Ordering::Relaxed);

@@ -80,7 +80,7 @@ function render() {
         (p) => `<div class="item">
           <div class="meta">
             <div class="name">${esc(p.name)}</div>
-            <div class="sub"><span class="dot ${p.connected ? "on" : ""}"></span>${p.connected ? "在线" : "离线"}${p.addr ? " · " + esc(p.addr) : ""}</div>
+            <div class="sub"><span class="dot ${p.connected ? "on" : ""}"></span>${p.connected ? "在线" : p.keyMismatch ? "配对信息不一致，请取消配对后重新扫码" : "离线"}${p.addr && !(p.keyMismatch && !p.connected) ? " · " + esc(p.addr) : ""}</div>
           </div>
           ${p.connected ? `<button class="btn small" data-send="${esc(p.id)}">发送文件</button>
           <button class="icon-btn" title="停止手机服务" data-stop="${esc(p.id)}" data-name="${esc(p.name)}"><svg viewBox="0 0 24 24" style="width:15px;height:15px"><path d="M12 3v8M6.3 6.8a8 8 0 1011.4 0"/></svg></button>` : ""}
@@ -305,6 +305,10 @@ listen("engine", (e) => {
       toast(ev.reason, "error");
       break;
     case "pairRequest":
+      refresh();
+      break;
+    case "keyMismatch":
+      toast(`「${ev.name}」的配对信息不一致，请重新配对`, "error");
       refresh();
       break;
     case "peerConnected":

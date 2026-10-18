@@ -312,13 +312,14 @@ private fun PcRow(pc: JSONObject, onRemove: () -> Unit) {
             Row(verticalAlignment = Alignment.CenterVertically) {
                 Dot(if (online) p.green else p.muted, 6)
                 Spacer(Modifier.width(6.dp))
-                val state = when (pc.optString("state")) {
-                    "connected" -> "在线"
-                    "rejected" -> "电脑已移除此手机，请重新配对"
-                    else -> "离线"
+                val (state, needsRepair) = when (pc.optString("state")) {
+                    "connected" -> "在线" to false
+                    "rejected" -> "电脑已移除此手机，请重新配对" to true
+                    "keyMismatch" -> "配对信息不一致，请重新配对" to true
+                    else -> "离线" to false
                 }
                 val host = if (online) pc.optString("addr") else pc.optJSONArray("hosts")?.optString(0).orEmpty()
-                Text(if (host.isNotEmpty() && state != "电脑已移除此手机，请重新配对") "$state · $host" else state, fontSize = 12.sp, color = p.muted)
+                Text(if (host.isNotEmpty() && !needsRepair) "$state · $host" else state, fontSize = 12.sp, color = p.muted)
             }
         }
         TextButton({ confirm = true }) { Text("移除", color = p.muted) }

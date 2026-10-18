@@ -138,9 +138,22 @@ impl RecordCipher {
         let n = self.next_nonce();
         self.aead
             .decrypt(&n.into(), ciphertext)
-            .map_err(|_| anyhow!("decryption failed"))
+            .map_err(|_| anyhow::Error::new(DecryptError))
     }
 }
+
+/// A record failed authentication. During the handshake this means the two sides
+/// hold different pairing keys, rather than a network problem.
+#[derive(Debug)]
+pub struct DecryptError;
+
+impl std::fmt::Display for DecryptError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str("decryption failed")
+    }
+}
+
+impl std::error::Error for DecryptError {}
 
 #[cfg(test)]
 mod tests {

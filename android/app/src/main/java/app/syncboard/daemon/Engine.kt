@@ -29,6 +29,7 @@ import java.net.InetSocketAddress
 import java.net.NetworkInterface
 import java.net.Socket
 import java.net.SocketTimeoutException
+import java.security.GeneralSecurityException
 import java.security.MessageDigest
 import java.util.concurrent.ConcurrentHashMap
 import java.util.concurrent.CountDownLatch
@@ -300,6 +301,8 @@ class Engine(
             while (running) {
                 val pc = config.pc(pcId) ?: break
                 var connected = false
+                var wrongPc = false
+                var refused = false
                 for (host in pc.hosts.toList()) {
                     if (!running) break
                     try {
@@ -310,32 +313,53 @@ class Engine(
                         s.readLoop()
                     } catch (e: UnknownDevice) {
                         state = "rejected"
+                        refused = true
                         pushStatus()
                         break
+                    } catch (e: KeyMismatch) {
+                        Log.w(TAG, "${pc.name}: pairing keys differ")
+                        state = "keyMismatch"
+                        refused = true
+                        pushStatus()
+                        break
+                    } catch (e: WrongPc) {
+                        // Another PC (or this one after a reset) now answers at this address.
+                        Log.w(TAG, "$host: ${e.message}")
+                        wrongPc = true
                     } catch (e: Exception) {
                         Log.d(TAG, "connect $host: $e")
                     }
                     if (connected) break
                 }
                 if (!running) break
-                if (!connected) {
-                    // Maybe the PC changed address; ask the LAN.
+                if (!connected && !refused) {
+                    // Maybe the PC changed address; ask the LAN. (Not when it answered and
+                    // refused us: it would be found at the same address and retried at once.)
                     discover(1200).firstOrNull { it.optString("id") == pcId }?.let { d ->
                         synchronized(config) { pc.rememberHost(d.getString("addr")) }
                         config.save()
                         backoff = 0
                     }
+                    // Nowhere answers as this PC, but its address does with another id.
+                    if (backoff != 0L && wrongPc) state = "rejected"
                 }
-                if (state != "rejected") state = "connecting"
+                val stuck = state == "rejected" || state == "keyMismatch"
+                if (!stuck) state = "connecting"
                 pushStatus()
                 if (backoff > 0) synchronized(lock) { lock.wait(backoff) }
-                backoff = if (state == "rejected") 60_000L else (backoff * 2).coerceIn(1_000L, 30_000L)
+                backoff = if (stuck) 60_000L else (backoff * 2).coerceIn(1_000L, 30_000L)
             }
             state = "idle"
         }
     }
 
     private class UnknownDevice : IOException("PC no longer knows this device")
+
+    /** The PC at this address has a different device id than the one we paired with. */
+    private class WrongPc(id: String) : IOException("answered as $id")
+
+    /** The handshake reached the encrypted auth step but the PC's record didn't open: different psk. */
+    private class KeyMismatch(cause: Throwable) : IOException("pairing key mismatch", cause)
 
     private fun connect(pc: Pc, host: String): Session {
         val sock = Socket()
@@ -353,11 +377,19 @@ class Engine(
                 if (resp.optString("code") == "unknown_device") throw UnknownDevice()
                 throw IOException("refused: $resp")
             }
+            val pcId = resp.optString("id")
+            if (pcId.isNotEmpty() && pcId != pc.id) throw WrongPc(pcId)
             val (c2s, s2c) = Crypto.sessionKeys(pc.psk, nonceC, unb64(resp.getString("nonce")))
             val reader = SecureReader(input, RecordCipher(s2c))
             val writer = SecureWriter(out, RecordCipher(c2s))
             writer.write(Message.of("t" to "auth", "name" to config.name, "platform" to "android"))
-            if (reader.read().kind != "auth") throw IOException("expected auth")
+            val auth = try {
+                reader.read()
+            } catch (e: GeneralSecurityException) {
+                // AEADBadTagException: our psk for this PC isn't the one it holds for us.
+                throw KeyMismatch(e)
+            }
+            if (auth.kind != "auth") throw IOException("expected auth")
             sock.soTimeout = 90_000
             val s = Session(pc, sock, reader, writer, host)
             sessions.put(pc.id, s)?.close()

@@ -75,7 +75,8 @@ fn state_json(st: &App) -> Value {
         .map(|p| {
             let c = connected.iter().find(|(id, ..)| *id == p.id);
             json!({"id": p.id, "name": p.name, "platform": p.platform,
-                   "connected": c.is_some(), "addr": c.map(|c| c.2.clone()).or(p.last_addr)})
+                   "connected": c.is_some(), "addr": c.map(|c| c.2.clone()).or(p.last_addr),
+                   "keyMismatch": st.engine.key_mismatch(&p.id)})
         })
         .collect();
     let settings = st.engine.with_store(|s| s.config.settings.clone());
