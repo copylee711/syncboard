@@ -93,6 +93,7 @@ pub struct Engine {
     store: Mutex<Store>,
     events: mpsc::UnboundedSender<Event>,
     sessions: Mutex<HashMap<String, Session>>,
+    /// Pairing tokens and when each expires.
     tokens: Mutex<Vec<([u8; 32], Instant)>>,
     pending_pairs: Mutex<HashMap<u64, oneshot::Sender<bool>>>,
     outbound: Mutex<HashMap<String, Outbound>>,
@@ -186,18 +187,18 @@ impl Engine {
         self.key_mismatch.lock().unwrap().contains(id)
     }
 
-    /// Creates a fresh single-use pairing token (base64url), valid for a few minutes.
-    pub fn new_pairing_token(&self) -> String {
+    /// Creates a fresh single-use pairing token (base64url), valid for `ttl`.
+    pub fn new_pairing_token(&self, ttl: Duration) -> String {
         let token = crypto::random_bytes::<32>();
         let mut t = self.tokens.lock().unwrap();
-        t.retain(|(_, at)| at.elapsed() < TOKEN_TTL);
-        t.push((token, Instant::now()));
+        t.retain(|(_, until)| Instant::now() < *until);
+        t.push((token, Instant::now() + ttl));
         B64URL.encode(token)
     }
 
     /// Creates a fresh single-use pairing token and returns the QR payload.
     pub fn pairing_uri(&self) -> String {
-        let token = self.new_pairing_token();
+        let token = self.new_pairing_token(TOKEN_TTL);
         let hosts = local_ipv4s().join(",");
         let (id, name) = {
             let s = self.store.lock().unwrap();
@@ -377,7 +378,7 @@ impl Engine {
                 let mac = B64.decode(proof.get("mac").and_then(Value::as_str).unwrap_or_default())?;
                 let token = {
                     let mut tokens = self.tokens.lock().unwrap();
-                    tokens.retain(|(_, at)| at.elapsed() < TOKEN_TTL);
+                    tokens.retain(|(_, until)| Instant::now() < *until);
                     let pos = tokens
                         .iter()
                         .position(|(t, _)| crypto::ct_eq(&crypto::hmac(t, &[b"client", &th]), &mac));

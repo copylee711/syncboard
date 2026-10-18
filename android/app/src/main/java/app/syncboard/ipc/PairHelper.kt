@@ -51,7 +51,8 @@ class PairHelper : Service() {
         }
         if (thread?.isAlive != true) {
             thread = Thread({
-                runCatching { watch(applicationContext) }.onFailure { Log.w(TAG, "pair helper", it) }
+                runCatching { watch(applicationContext) }.onFailure { trace("watch failed: $it") }
+                trace("watch end")
                 stopSelf()
             }, "pair-helper").apply { start() }
         }
@@ -67,9 +68,12 @@ class PairHelper : Service() {
         private const val TAG = "SyncBoard"
         private const val CHANNEL = "pairing"
         private const val NOTE_ID = 8
-        private const val WATCH_MS = 3 * 60_000L
+        private const val WATCH_MS = 5 * 60_000L
+        /** Every start pushes this out, so the helper outlives slow trips through Settings. */
+        @Volatile private var deadline = 0L
 
         fun start(ctx: Context) {
+            deadline = System.currentTimeMillis() + WATCH_MS
             runCatching { ctx.startForegroundService(Intent(ctx, PairHelper::class.java)) }
                 .onFailure { Log.w(TAG, "pair helper not started", it) }
         }
@@ -77,32 +81,39 @@ class PairHelper : Service() {
         // Some ROMs (vivo) hide app logcat; the last run is also kept in
         // Android/data/app.syncboard/files/pair.log for diagnosis.
         private var traceFile: java.io.File? = null
-        private fun trace(msg: String) {
+        internal fun trace(msg: String) {
             Log.d(TAG, msg)
             runCatching { traceFile?.appendText("${java.time.LocalTime.now()} $msg\n") }
         }
 
         private fun watch(ctx: Context) {
             traceFile = ctx.getExternalFilesDir(null)?.let { java.io.File(it, "pair.log") }
-            runCatching { traceFile?.writeText("") }
+            runCatching { traceFile?.takeIf { it.length() > 64 * 1024 }?.writeText("") }
             trace("watch start")
             val nsd = ctx.getSystemService(NsdManager::class.java)
             val found = LinkedBlockingQueue<NsdServiceInfo>()
             val listener = object : NsdManager.DiscoveryListener {
-                override fun onServiceFound(s: NsdServiceInfo) { found.put(s) }
+                override fun onServiceFound(s: NsdServiceInfo) {
+                    trace("onServiceFound ${s.serviceName}")
+                    found.put(s)
+                }
                 override fun onServiceLost(s: NsdServiceInfo) {}
                 override fun onDiscoveryStarted(t: String) {}
                 override fun onDiscoveryStopped(t: String) {}
-                override fun onStartDiscoveryFailed(t: String, code: Int) {}
+                override fun onStartDiscoveryFailed(t: String, code: Int) = trace("discovery failed: $code")
                 override fun onStopDiscoveryFailed(t: String, code: Int) {}
             }
             nsd.discoverServices("_adb-tls-pairing._tcp", NsdManager.PROTOCOL_DNS_SD, listener)
-            val deadline = System.currentTimeMillis() + WATCH_MS
             try {
                 while (true) {
                     val left = deadline - System.currentTimeMillis()
                     if (left <= 0) return
-                    val s = found.poll(left, TimeUnit.MILLISECONDS) ?: return
+                    // Wake up now and then: a later start may have moved the deadline.
+                    val s = found.poll(minOf(left, 10_000), TimeUnit.MILLISECONDS)
+                    if (s == null) {
+                        trace("waiting, ${left / 1000}s left")
+                        continue
+                    }
                     val hosts = AdbQr.hostsOf(s.serviceName)
                     trace("found ${s.serviceName} hosts=$hosts")
                     if (hosts.isEmpty()) continue

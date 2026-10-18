@@ -243,6 +243,9 @@ object AppPrefs {
     /** Mirror of the daemon's autoDisableDevOptions, for when the daemon isn't running. */
     fun autoDisableDev(ctx: Context) = p(ctx).getBoolean("autoDisableDev", true)
     fun setAutoDisableDev(ctx: Context, v: Boolean) = p(ctx).edit().putBoolean("autoDisableDev", v).apply()
+    /** vivo has no API for its 允许后台耗电 switch; remember that we sent the user there. */
+    fun vivoBackgroundConfirmed(ctx: Context) = p(ctx).getBoolean("vivoBg", false)
+    fun setVivoBackgroundConfirmed(ctx: Context) = p(ctx).edit().putBoolean("vivoBg", true).apply()
     fun askedNotify(ctx: Context) = p(ctx).getBoolean("askedNotify", false)
     fun setAskedNotify(ctx: Context) = p(ctx).edit().putBoolean("askedNotify", true).apply()
     fun hideFromRecents(ctx: Context) = p(ctx).getBoolean("hideRecents", false)

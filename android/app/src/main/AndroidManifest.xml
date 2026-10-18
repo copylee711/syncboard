@@ -11,6 +11,8 @@
     <uses-permission android:name="android.permission.REQUEST_INSTALL_PACKAGES" />
     <!-- PairHelper: a few minutes in the foreground while the user scans the PC's QR. -->
     <uses-permission android:name="android.permission.FOREGROUND_SERVICE" />
+    <!-- So PairHelper keeps running in the background while the user scans (non-vivo ROMs). -->
+    <uses-permission android:name="android.permission.REQUEST_IGNORE_BATTERY_OPTIMIZATIONS" />
     <uses-permission android:name="android.permission.FOREGROUND_SERVICE_DATA_SYNC" />
     <!-- Granted over adb during setup; lets the app turn wireless debugging on after a reboot. -->
     <uses-permission

@@ -407,6 +407,8 @@ private fun ServiceDown() {
         }
     }
     LaunchedEffect(oneTap) { if (oneTap && !busy && !AppPrefs.userStopped(ctx)) start() }
+    // Needs pairing: have the port reporter ready whichever way the user reaches the scanner.
+    LaunchedEffect(oneTap) { if (!oneTap) app.syncboard.ipc.PairHelper.start(ctx.applicationContext) }
 
     Row(verticalAlignment = Alignment.CenterVertically, modifier = Modifier.padding(top = 12.dp)) {
         Dot(p.amber)
@@ -456,11 +458,13 @@ private fun PhoneSetupSteps() {
     val dev = devState == DevOptions.DevState.On
     var wifi by remember { mutableStateOf(DevOptions.wirelessDebuggingOn(ctx)) }
     var usb by remember { mutableStateOf(DevOptions.usbDebuggingOn(ctx)) }
+    var bg by remember { mutableStateOf(DevOptions.backgroundAllowed(ctx)) }
     // Re-read when coming back from Settings.
     androidx.lifecycle.compose.LifecycleResumeEffect(Unit) {
         devState = DevOptions.devState(ctx)
         wifi = DevOptions.wirelessDebuggingOn(ctx)
         usb = DevOptions.usbDebuggingOn(ctx)
+        bg = DevOptions.backgroundAllowed(ctx)
         DevOptions.dismissGuide(ctx)
         onPauseOrDispose {}
     }
@@ -499,17 +503,30 @@ private fun PhoneSetupSteps() {
                 go { DevOptions.openDeveloperOptionsSwitch(ctx) }
             }
         }
+        // Android 10 has no wireless debugging: only the cable works there.
+        if (android.os.Build.VERSION.SDK_INT < 30) {
+            Divider()
+            Hint("Android 10 不支持无线调试，请用下方的数据线方式。")
+        } else {
         Divider()
         StepRow("2. 无线调试", "手机和电脑连同一个 Wi-Fi", wifi, enabled = dev) {
             if (DevOptions.enableWirelessDebugging(ctx)) wifi = true
-            else go { DevOptions.openWirelessDebuggingSwitch(ctx) }
+            else go { DevOptions.openWirelessDebuggingToTurnOn(ctx) }
         }
         Divider()
+        StepRow(
+            "3. 允许后台运行",
+            if (DevOptions.isVivo()) "扫码时 SyncBoard 要在后台告诉电脑配对端口：在「后台耗电管理」里选「允许后台耗电」"
+            else "扫码时 SyncBoard 要在后台告诉电脑配对端口",
+            bg, action = "去设置",
+        ) { go { DevOptions.openBackgroundSetting(ctx) } }
+        Divider()
         ActionRow(
-            "3. 扫描电脑上的二维码",
+            "4. 扫描电脑上的二维码",
             "电脑 SyncBoard 点「添加手机」→ 第 2 步「扫码连接」，然后在这里点「使用二维码配对设备」扫码",
             if (dev && wifi) p.ink else p.muted,
         ) { go { DevOptions.openWirelessDebuggingPage(ctx) } }
+        }
     }
     SectionLabel("或者用数据线")
     Group {

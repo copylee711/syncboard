@@ -60,6 +60,12 @@ object DevOptions {
         return developerOptionsOn(ctx)
     }
 
+    private fun wirelessDebuggingTile() = Intent("android.service.quicksettings.action.QS_TILE_PREFERENCES")
+        .putExtra(Intent.EXTRA_COMPONENT_NAME, ComponentName(
+            "com.android.settings", "com.android.settings.development.qstile.DevelopmentTiles\$WirelessDebugging"))
+        .setPackage("com.android.settings")
+        .addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
+
     /** Turns wireless debugging on directly, when allowed. */
     fun enableWirelessDebugging(ctx: Context) = put(ctx, ADB_WIFI) && wirelessDebuggingOn(ctx)
 
@@ -98,6 +104,20 @@ object DevOptions {
             "打开页面最上面的「开发者选项」开关，然后返回 SyncBoard 继续下一步。")
     }
 
+    /**
+     * Wireless debugging's own page, whose on/off switch is at the top (in developer
+     * options the switch sits low on a long list). Falls back to that list.
+     */
+    fun openWirelessDebuggingToTurnOn(ctx: Context) {
+        app.syncboard.ipc.PairHelper.start(ctx)
+        if (ctx.tryStart(wirelessDebuggingTile())) {
+            guide(ctx, "打开无线调试", "打开最上面的「使用无线调试」，再点「使用二维码配对设备」",
+                "打开最上面的「使用无线调试」开关，在弹窗中点「允许」，然后点「使用二维码配对设备」扫描电脑「添加手机」第 2 步的二维码。")
+        } else {
+            openWirelessDebuggingSwitch(ctx)
+        }
+    }
+
     /** Developer options, scrolled to the wireless debugging switch. */
     fun openWirelessDebuggingSwitch(ctx: Context) {
         ctx.tryStart(highlight(Settings.ACTION_APPLICATION_DEVELOPMENT_SETTINGS, "toggle_adb_wireless"))
@@ -108,6 +128,34 @@ object DevOptions {
     fun openUsbDebuggingSwitch(ctx: Context) {
         ctx.tryStart(highlight(Settings.ACTION_APPLICATION_DEVELOPMENT_SETTINGS, "enable_adb"))
         guide(ctx, "打开 USB 调试", "打开「USB 调试」，然后插上数据线", "在「调试」分组里打开「USB 调试」，插上数据线，在手机弹窗中点「允许」。")
+    }
+
+    // ---- staying alive in the background ----
+    //
+    // While the user scans in Settings, PairHelper must run to tell the PC the pairing port.
+    // vivo/OriginOS freezes background apps within ~10 s even with a foreground service, and
+    // ignores the standard battery-optimization whitelist; only its own 允许后台耗电 helps.
+
+    fun isVivo() = android.os.Build.MANUFACTURER.equals("vivo", ignoreCase = true)
+
+    fun backgroundAllowed(ctx: Context): Boolean =
+        if (isVivo()) app.syncboard.ipc.AppPrefs.vivoBackgroundConfirmed(ctx)
+        else ctx.getSystemService(android.os.PowerManager::class.java).isIgnoringBatteryOptimizations(ctx.packageName)
+
+    fun openBackgroundSetting(ctx: Context) {
+        if (isVivo()) {
+            val vivoPage = Intent("com.iqoo.powersaving.battery.high.power.jump")
+                .setPackage("com.iqoo.powersaving").addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
+            if (ctx.tryStart(vivoPage)) {
+                app.syncboard.ipc.AppPrefs.setVivoBackgroundConfirmed(ctx)
+                guide(ctx, "允许后台运行", "找到 SyncBoard，选「允许后台耗电」",
+                    "在列表里找到 SyncBoard，选「允许后台耗电」，然后返回 SyncBoard。扫码配对时它要在后台告诉电脑配对端口。")
+                return
+            }
+        }
+        val ask = Intent(Settings.ACTION_REQUEST_IGNORE_BATTERY_OPTIMIZATIONS, android.net.Uri.parse("package:${ctx.packageName}"))
+            .addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
+        if (!ctx.tryStart(ask)) ctx.tryStart(Intent(Settings.ACTION_IGNORE_BATTERY_OPTIMIZATION_SETTINGS).addFlags(Intent.FLAG_ACTIVITY_NEW_TASK))
     }
 
     private const val GUIDE_CHANNEL = "guide"
@@ -155,11 +203,7 @@ object DevOptions {
      * it as the preferences screen of its Quick Settings tile; falls back to the switch.
      */
     fun openWirelessDebuggingPage(ctx: Context) {
-        val tile = Intent("android.service.quicksettings.action.QS_TILE_PREFERENCES")
-            .putExtra(Intent.EXTRA_COMPONENT_NAME, ComponentName(
-                "com.android.settings", "com.android.settings.development.qstile.DevelopmentTiles\$WirelessDebugging"))
-            .setPackage("com.android.settings")
-            .addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
+        val tile = wirelessDebuggingTile()
         // Tells the PC the pairing port in case its mDNS can't see this phone.
         app.syncboard.ipc.PairHelper.start(ctx)
         if (ctx.tryStart(tile)) {

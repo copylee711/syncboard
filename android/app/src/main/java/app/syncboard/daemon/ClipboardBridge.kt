@@ -72,7 +72,7 @@ class ClipboardBridge(context: Context) {
         if (clip.itemCount == 0) return null
         val item = clip.getItemAt(0)
         item.uri?.let { uri ->
-            if (uri.authority == PROVIDER_AUTHORITY) return null // our own write
+            if (uri.authority == PROVIDER_AUTHORITY || uri == ownUri) return null // our own write
             if (mimes.any { it.startsWith("image/") }) {
                 val png = readImage(uri, maxImage) ?: return null
                 return Clip.Image(png)
@@ -89,6 +89,30 @@ class ClipboardBridge(context: Context) {
     fun setText(text: String) {
         main.post { cm.setPrimaryClip(ClipData.newPlainText(LABEL, text)) }
     }
+
+    @Volatile private var ownUri: Uri? = null
+
+    /**
+     * Puts an image that already lives in MediaStore (a screenshot) on the clipboard by its
+     * own URI. Pasting then works even when the SyncBoard app isn't running: ROMs such as
+     * OriginOS won't start it for other apps, and [setImage]'s URIs need its provider.
+     */
+    fun setMediaImage(uri: Uri, mime: String) {
+        ownUri = uri
+        val clip = ClipData(ClipDescription(LABEL, arrayOf(mime)), ClipData.Item(uri))
+        main.post { cm.setPrimaryClip(clip) }
+    }
+
+    /** The MediaStore URI and type of a file under shared storage, if it is indexed yet. */
+    fun mediaUriOf(path: String): Pair<Uri, String>? = runCatching {
+        val images = android.provider.MediaStore.Images.Media.EXTERNAL_CONTENT_URI
+        @Suppress("DEPRECATION")
+        val data = android.provider.MediaStore.MediaColumns.DATA
+        resolver.query(images, arrayOf(android.provider.BaseColumns._ID, android.provider.MediaStore.MediaColumns.MIME_TYPE),
+            "$data=?", arrayOf(path), null)?.use { c ->
+            if (c.moveToFirst()) android.content.ContentUris.withAppendedId(images, c.getLong(0)) to (c.getString(1) ?: "image/png") else null
+        }
+    }.onFailure { Log.w(TAG, "MediaStore lookup failed", it) }.getOrNull()
 
     fun setImage(png: ByteArray) {
         val name = "clip-${Crypto.randomId()}.png"

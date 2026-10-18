@@ -157,9 +157,9 @@ async function showTab(name) {
       setStatus("", "等待手机扫码…");
     };
     await load();
-    // The QR carries a pairing token that expires after 5 minutes.
+    // The QR's pairing token lasts 30 minutes; replacing it abandons a scan in progress.
     // Not while a phone is mid-pairing: a new QR restarts the flow.
-    qrTimer = setInterval(() => tab === "wifi" && !$("setupStatus").classList.contains("progress") && load(), 4 * 60 * 1000);
+    qrTimer = setInterval(() => tab === "wifi" && !$("setupStatus").classList.contains("progress") && load(), 25 * 60 * 1000);
   } else if (name === "usb") {
     await call("setup_usb");
   } else if (name === "install") {

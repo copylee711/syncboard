@@ -55,7 +55,13 @@ class Engine(
 
     private val screenshots = ScreenshotWatcher(bridge.resolver) { f ->
         val png = ClipboardBridge.toPng(f.readBytes(), MAX_IMAGE) ?: return@ScreenshotWatcher
-        bridge.setImage(png) // paste on the phone too; our own clip is not re-sent
+        // Paste on the phone too (our own clip is not re-sent). The screenshot's MediaStore
+        // URI works without the app running; it may take a moment to be indexed.
+        val media = (0 until 5).firstNotNullOfOrNull { i ->
+            if (i > 0) Thread.sleep(300)
+            bridge.mediaUriOf(f.path)
+        }
+        if (media != null) bridge.setMediaImage(media.first, media.second) else bridge.setImage(png)
         val n = pushImage(png)
         Log.i(TAG, "screenshot copied (${png.size} bytes, $n PC(s))")
     }

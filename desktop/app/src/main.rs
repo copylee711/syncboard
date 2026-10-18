@@ -18,6 +18,9 @@ use tauri::{AppHandle, Emitter, Manager, RunEvent, WebviewUrl, WebviewWindowBuil
 use tauri_plugin_dialog::DialogExt;
 
 const MAIN: &str = "main";
+/// The 添加手机 QR stays valid this long. The UI only replaces it well before that, because
+/// replacing it abandons a scan in progress (the phone keeps waiting on the old code).
+const WIFI_QR_TTL: Duration = Duration::from_secs(30 * 60);
 
 struct App {
     engine: Arc<Engine>,
@@ -204,7 +207,7 @@ fn setup_usb(app: AppHandle, st: St) -> Result<(), String> {
 fn setup_wifi(app: AppHandle, st: St) -> Result<Value, String> {
     let adb = adb_path(&st)?;
     let cancel = new_setup(&st);
-    let pairing = adb::WifiPairing::new(&syncboard_core::engine::local_ipv4s(), st.engine.new_pairing_token());
+    let pairing = adb::WifiPairing::new(&syncboard_core::engine::local_ipv4s(), st.engine.new_pairing_token(WIFI_QR_TTL));
     let svg = qr_svg(&pairing.qr_text());
     let hint = Arc::new(Mutex::new(None));
     *st.wifi_pairing.lock().unwrap() = Some((pairing.name.clone(), hint.clone()));
