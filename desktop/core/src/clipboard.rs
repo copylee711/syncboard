@@ -138,13 +138,14 @@ fn register(name: &str) -> u32 {
     unsafe { RegisterClipboardFormatW(wide(name).as_ptr()) }
 }
 
-/// Opens the clipboard, retrying while another process holds it.
+/// Opens the clipboard, retrying while another process holds it (clipboard managers and
+/// Windows' own clipboard history can hold it for a few hundred milliseconds).
 fn open(hwnd: HWND) -> bool {
-    for _ in 0..10 {
+    for _ in 0..50 {
         if unsafe { OpenClipboard(hwnd) } != 0 {
             return true;
         }
-        std::thread::sleep(Duration::from_millis(15));
+        std::thread::sleep(Duration::from_millis(20));
     }
     false
 }

@@ -70,6 +70,11 @@ pub enum Event {
     AdbPairHint { name: String, ip: String, pair_port: u16, connect_port: Option<u16> },
     /// The phone shared a link with 在电脑上打开 (protocol §9).
     OpenUrl { from: String, url: String },
+    /// A text message arrived on the phone (protocol §10): only its verification code
+    /// (`body` None), or the whole message when the phone's 新短信提醒 is on.
+    Sms { peer: String, from: Option<String>, body: Option<String>, code: Option<String>, source: Option<String> },
+    /// A notification from an app on the phone (protocol §10, 手机通知同步).
+    PhoneNotification { peer: String, pkg: String, app: String, title: String, text: String },
 }
 
 struct Session {
@@ -709,6 +714,17 @@ impl Engine {
                 self.unpair(peer)?;
                 self.emit(Event::PeerDisconnected { id: peer.into() });
                 bail!("peer unpaired");
+            }
+            "notif" => {
+                let s = |k: &str| m.str(k).unwrap_or_default().chars().take(2000).collect::<String>();
+                self.emit(Event::PhoneNotification { peer: peer.into(), pkg: s("pkg"), app: s("app"), title: s("title"), text: s("text") });
+            }
+            "sms.code" | "sms.new" => {
+                let s = |k: &str| m.str(k).filter(|v| !v.is_empty()).map(|v| v.chars().take(4000).collect::<String>());
+                let code = s("code").filter(|c| c.len() <= 16);
+                if m.kind() == "sms.new" || code.is_some() {
+                    self.emit(Event::Sms { peer: peer.into(), from: s("from"), body: s("body"), code, source: s("source") });
+                }
             }
             "open.url" => {
                 let url = m.str("url").unwrap_or_default();

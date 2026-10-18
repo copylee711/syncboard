@@ -225,3 +225,33 @@ Phone → PC, no reply:
 | `t` | fields | |
 |---|---|---|
 | `open.url` | `url` | open an http(s) link in the PC's browser (share sheet 在电脑上打开) |
+
+## 10. Text messages
+
+The phone daemon (shell holds `READ_SMS`) checks the newest SMS inbox id every 3 s (Android 16
+refuses content observers from the daemon) and, per the phone's settings, sends one of:
+
+| `t` | fields | when |
+|---|---|---|
+| `sms.code` | `code`, `source`?, `ts` | 短信验证码同步 (default on): a new message that carries a verification code. Only the code and the sender's 【签名】 leave the phone |
+| `sms.new` | `from`, `body` (≤ 4000 chars), `code`?, `source`?, `ts` | 新短信在电脑上提醒 (default off): every new message |
+
+Messages older than 10 minutes when seen (restored backups) are skipped. The PC copies `code`
+to its clipboard and shows a Windows notification, each per its own settings.
+
+5G messages (RCS) are not in the SMS database; with 手机通知同步 on, the messaging app's
+notification stands in for them (a code becomes `sms.code`; other text becomes `sms.new` when
+新短信在电脑上提醒 is on and the inbox didn't have it within 5 s).
+
+## 11. Phone notifications
+
+With 手机通知同步 on, the daemon grants the app's `NotificationListenerService` notification
+access (`cmd notification allow_listener`); the listener hands each new notification to the daemon
+over the local IPC socket, and the daemon sends:
+
+| `t` | fields | |
+|---|---|---|
+| `notif` | `pkg`, `app` (label), `title`, `text` (≤ 2000 chars), `ts` | shown as a Windows notification |
+
+Ongoing, foreground-service and group-summary notifications, and updates that change nothing,
+are skipped.

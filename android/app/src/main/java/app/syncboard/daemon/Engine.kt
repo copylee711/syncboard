@@ -84,6 +84,132 @@ class Engine(
         trimSoon()
     }
 
+    /**
+     * New text messages: with 新短信提醒 the whole message goes to the PCs; otherwise only
+     * a verification code does (短信验证码同步), never the text around it.
+     */
+    private val sms = SmsWatcher(bridge.resolver) { address, body ->
+        val s = config.settings
+        val found = SmsCode.find(body)
+        val m = if (s.syncSms && firstTime("text:" + body.take(60))) {
+            // The code goes with it; mark it sent so the messaging app's notification doesn't repeat it.
+            found?.let { firstTime("code:" + it.code) }
+            Message.of("t" to "sms.new", "from" to address, "body" to body.take(4000),
+                "code" to found?.code, "source" to found?.source, "ts" to System.currentTimeMillis())
+        } else if (s.syncSmsCodes && found != null && firstTime("code:" + found.code)) {
+            Message.of("t" to "sms.code", "code" to found.code, "source" to found.source, "ts" to System.currentTimeMillis())
+        } else return@SmsWatcher
+        Log.i(TAG, "SMS ${m.kind} to ${sessions.size} PC(s)")
+        broadcast { it.writer.write(m) }
+    }
+
+    /** Codes and texts sent lately: a normal SMS shows up both in the inbox and as a notification. */
+    private val recentSent = ArrayDeque<Pair<Long, String>>()
+
+    private fun firstTime(key: String): Boolean = synchronized(recentSent) {
+        val now = System.currentTimeMillis()
+        while (recentSent.isNotEmpty() && now - recentSent.first().first > 120_000) recentSent.removeFirst()
+        if (recentSent.any { it.second == key }) return false
+        recentSent.addLast(now to key)
+        true
+    }
+
+    /** The default SMS app, whose notifications carry 5G messages (RCS) that aren't in the SMS database. */
+    private val smsApps: Set<String> by lazy {
+        val holders = runCatching {
+            ProcessBuilder("cmd", "role", "get-role-holders", "android.app.role.SMS").start().inputStream.bufferedReader().readText()
+        }.getOrDefault("").split(Regex("""[\s;,]+""")).filter { it.contains('.') }
+        (holders + listOf("com.android.mms", "com.google.android.apps.messaging", "com.samsung.android.messaging")).toSet()
+    }
+
+    private fun appLabel(pkg: String): String = runCatching {
+        val pm = ShellContext.init().packageManager
+        pm.getApplicationInfo(pkg, 0).loadLabel(pm).toString()
+    }.getOrDefault(pkg)
+
+    /** A notification from [app.syncboard.ipc.NotifListener]. */
+    fun onNotification(o: JSONObject) {
+        val s = config.settings
+        val pkg = o.optString("pkg")
+        DaemonLog.i("notification from $pkg (sync ${if (s.syncNotifications) "on" else "off"}, ${sessions.size} PC(s))")
+        if (!s.syncNotifications) return
+        val title = o.optString("title")
+        val text = o.optString("text")
+        // The messaging app may post from a helper package (vivo: com.android.mms.service).
+        if (smsApps.any { pkg == it || pkg.startsWith("$it.") }) {
+            val found = SmsCode.find("$title $text")
+            if (found != null && s.syncSmsCodes) {
+                if (firstTime("code:" + found.code)) {
+                    broadcast { it.writer.write(Message.of("t" to "sms.code", "code" to found.code,
+                        "source" to (found.source ?: title.ifBlank { null }), "ts" to System.currentTimeMillis())) }
+                    DaemonLog.i("code from a messaging notification sent to ${sessions.size} PC(s)")
+                }
+                return
+            }
+            if (s.syncSms) {
+                // Ordinary texts come from the SMS database (polled every few seconds); what
+                // is still unseen after that is a 5G message, which only its notification carries.
+                timer.schedule({
+                    if (firstTime("text:" + text.take(60))) {
+                        broadcast { it.writer.write(Message.of("t" to "sms.new", "from" to title, "body" to text.take(4000),
+                            "ts" to System.currentTimeMillis())) }
+                    }
+                }, 5, TimeUnit.SECONDS)
+                return
+            }
+        }
+        if (!firstTime("n:$pkg:$title:$text")) return
+        val m = Message.of("t" to "notif", "pkg" to pkg, "app" to appLabel(pkg), "title" to title, "text" to text,
+            "ts" to o.optLong("ts", System.currentTimeMillis()))
+        broadcast { it.writer.write(m) }
+    }
+
+    private val LISTENER = "app.syncboard/app.syncboard.ipc.NotifListener"
+
+    /** Whether the app's listener says it is connected (see [onListenerState]). */
+    @Volatile private var listenerBound = false
+
+    fun onListenerState(bound: Boolean) {
+        listenerBound = bound
+        DaemonLog.i("notification listener ${if (bound) "connected" else "disconnected"}")
+    }
+
+    /** Grants (or takes back) the app's notification access; shell may do that. */
+    private fun applyNotifSetting() = Thread {
+        if (config.settings.syncNotifications) ensureListener(force = true) else {
+            listenerBound = false
+            DaemonLog.i("notification listener disallow_listener ${notificationCmd("disallow_listener")}")
+        }
+    }.start()
+
+    private fun notificationCmd(verb: String): String = runCatching {
+        ProcessBuilder("cmd", "notification", verb, LISTENER).redirectErrorStream(true).start()
+            .inputStream.bufferedReader().readText().trim().ifEmpty { "ok" }
+    }.getOrElse { it.toString() }
+
+    /**
+     * Android only delivers notifications to an app's listener service, and some ROMs (vivo)
+     * bind it only while the app's process runs, never starting the process themselves.
+     * When it isn't connected, start the app's process (touching its content provider does
+     * that, even where background starts are blocked) and grant access again so the system
+     * binds it. Checked once a minute; nothing is spawned while it is connected.
+     */
+    private fun ensureListener(force: Boolean = false) {
+        if (!config.settings.syncNotifications) return
+        if (!appRunning()) listenerBound = false
+        if (listenerBound && !force) return
+        runCatching { bridge.resolver.call(android.net.Uri.parse("content://app.syncboard.clip"), "wake", null, null) }
+        Thread.sleep(500)
+        DaemonLog.i("notification listener allow_listener ${notificationCmd("allow_listener")}")
+    }
+
+    private fun appRunning(): Boolean = File("/proc").listFiles()?.any { d ->
+        d.name.firstOrNull()?.isDigit() == true &&
+            runCatching { File(d, "cmdline").readText().substringBefore('\u0000') == "app.syncboard" }.getOrDefault(false)
+    } ?: true
+
+    private fun applySmsSetting() = sms.setEnabled(config.settings.syncSmsCodes || config.settings.syncSms)
+
     private fun applyMediaSettings() = with(config.settings) {
         media.configure(MediaWatcher.Targets(copyScreenshots, copyCameraPhotos, copyFolders.toList()))
     }
@@ -96,6 +222,9 @@ class Engine(
         bridge.listen { io.execute { onLocalChange() } }
         applyToastSetting()
         applyMediaSettings()
+        applySmsSetting()
+        applyNotifSetting()
+        timer.scheduleWithFixedDelay({ runCatching { ensureListener() } }, 60, 60, TimeUnit.SECONDS)
         timer.scheduleWithFixedDelay({
             sessions.values.forEach { s -> io.execute { runCatching { s.writer.write(Message.of("t" to "ping")) } } }
         }, 30, 30, TimeUnit.SECONDS)
@@ -130,10 +259,14 @@ class Engine(
 
     fun updateSettings(o: JSONObject) {
         val before = config.settings.hideAccessToast
+        val smsBefore = config.settings.syncSmsCodes to config.settings.syncSms
+        val notifBefore = config.settings.syncNotifications
         config.settings.update(o)
         config.save()
         if (before != config.settings.hideAccessToast) applyToastSetting()
         applyMediaSettings()
+        if (smsBefore != (config.settings.syncSmsCodes to config.settings.syncSms)) applySmsSetting()
+        if (notifBefore != config.settings.syncNotifications) applyNotifSetting()
         pushStatus()
     }
 

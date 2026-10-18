@@ -23,7 +23,7 @@ import java.util.concurrent.CopyOnWriteArrayList
  * 127.0.0.1:[PORT]. Callers are identified by the uid that owns their socket in
  * /proc/net/tcp*: only the SyncBoard app and shell/root may talk to the daemon.
  *
- * Requests: {"cmd": status|pairQr|pairCode|unpair|settings|discover|reconnect|wakeInfo|imageFolders|openOnPc|selfUpdate|stop, ...}
+ * Requests: {"cmd": status|pairQr|pairCode|unpair|settings|discover|reconnect|wakeInfo|imageFolders|notif|openOnPc|selfUpdate|stop, ...}
  * Two connection types carry raw bytes after their first frame:
  *  - {"cmd":"sendFile",name,size,pc?} then `size` bytes, streamed to the PC;
  *  - {"cmd":"getClip",name} answered with {"size"} then the clipboard image bytes;
@@ -44,7 +44,10 @@ class IpcServer private constructor(private val server: ServerSocket, private va
         Thread({
             while (true) {
                 val s = runCatching { server.accept() }.getOrNull() ?: continue
-                Thread({ serve(s) }, "ipc-client").start()
+                // A client hanging up mid-reply must not take the daemon down.
+                Thread({
+                    runCatching { serve(s) }.onFailure { Log.d(Engine.TAG, "ipc client failed: $it") }
+                }, "ipc-client").start()
             }
         }, "ipc").start()
     }
@@ -87,6 +90,15 @@ class IpcServer private constructor(private val server: ServerSocket, private va
                         }
                     }
                     writePlain(out, reply)
+                    return
+                }
+                // From the app's notification listener, which sends and hangs up.
+                "notif" -> {
+                    engine.onNotification(hello)
+                    return
+                }
+                "listener" -> {
+                    engine.onListenerState(hello.optBoolean("bound"))
                     return
                 }
                 "getClip" -> {

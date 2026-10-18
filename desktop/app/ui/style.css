@@ -227,3 +227,5 @@ footer { color: var(--muted); font-size: 12px; margin: 22px 2px 0; }
 .item.picked { box-shadow: inset 3px 0 0 var(--ink); }
 
 .row-btns { display: flex; gap: 6px; flex-shrink: 0; }
+.apps-list { max-height: 50vh; overflow-y: auto; margin: 4px -4px 16px; }
+.apps-list .row { padding: 10px 4px; }

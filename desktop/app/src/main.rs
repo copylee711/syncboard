@@ -3,6 +3,7 @@
 mod adb;
 mod files;
 mod hotspot;
+mod notify;
 mod system;
 mod update;
 
@@ -29,6 +30,9 @@ struct App {
     /// Recent transfers and pending pair requests, kept so a recreated window can show them.
     transfers: Mutex<Vec<Value>>,
     pair_requests: Mutex<Vec<Value>>,
+    /// Phone apps that sent notifications lately, newest first: (package, name). For the
+    /// per-app switches; kept in memory only.
+    notif_apps: Mutex<Vec<(String, String)>>,
     pause_item: Mutex<Option<CheckMenuItem<Wry>>>,
     /// Cancels the running phone-setup flow (USB watch or wireless pairing).
     setup_cancel: Mutex<Option<Arc<AtomicBool>>>,
@@ -290,6 +294,14 @@ async fn install_update(app: AppHandle, version: String) -> Result<(), String> {
     Ok(())
 }
 
+/// 发送测试通知: shows whether Windows lets SyncBoard's notifications through.
+#[tauri::command]
+async fn test_notification() -> Result<(), String> {
+    tauri::async_runtime::spawn_blocking(|| notify::try_show("SyncBoard 测试通知", &["手机发来的验证码和通知会这样显示"]))
+        .await
+        .map_err(|e| e.to_string())?
+}
+
 #[tauri::command]
 fn clip_history(st: St) -> Value {
     json!(st.sync.history())
@@ -515,6 +527,27 @@ fn on_engine_event(app: &AppHandle, ev: Event) {
             setup_event(app, "done", &format!("已与「{name}」配对"));
         }
         Event::OpenUrl { url, .. } => system::open_url(url),
+        Event::PhoneNotification { pkg, app: name, title, text, .. } => {
+            {
+                let mut seen = st.notif_apps.lock().unwrap();
+                seen.retain(|(p, _)| p != pkg);
+                seen.insert(0, (pkg.clone(), name.clone()));
+                seen.truncate(30);
+            }
+            let s = st.engine.with_store(|s| s.config.settings.clone());
+            if s.phone_notifications && !s.muted_apps.contains(pkg) {
+                let (pkg, skip_running) = (pkg.clone(), s.skip_running_apps);
+                let head = if title.is_empty() { name.clone() } else { format!("{name} · {title}") };
+                let text = text.clone();
+                std::thread::spawn(move || {
+                    if skip_running && pc_app_running(&pkg) {
+                        return;
+                    }
+                    notify::show(&head, &[text.as_str()])
+                });
+            }
+        }
+        Event::Sms { peer, from, body, code, source } => on_sms(app, peer, from.as_deref(), body.as_deref(), code.as_deref(), source.as_deref()),
         Event::PairRequest { .. } => {
             st.pair_requests.lock().unwrap().push(v.clone());
             show_window(app);
@@ -534,6 +567,79 @@ fn on_engine_event(app: &AppHandle, ev: Event) {
         update_tray(app);
     }
     notify_ui(app, "engine", v);
+}
+
+/// Whether the PC version of a phone app is running, so its own notifications already
+/// show here (the phone's would come twice).
+fn pc_app_running(pkg: &str) -> bool {
+    let exes: &[&str] = match pkg {
+        "com.tencent.mm" => &["weixin.exe", "wechat.exe"],
+        "com.tencent.mobileqq" => &["qq.exe"],
+        "com.tencent.tim" => &["tim.exe"],
+        "com.tencent.wework" => &["wxwork.exe"],
+        "com.alibaba.android.rimet" => &["dingtalk.exe"],
+        "com.ss.android.lark" => &["feishu.exe", "lark.exe"],
+        "org.telegram.messenger" => &["telegram.exe"],
+        _ => return false,
+    };
+    let running = system::process_names();
+    exes.iter().any(|e| running.contains(*e))
+}
+
+/// Phone apps for the per-app switches: those seen lately, then muted ones not seen.
+#[tauri::command]
+fn notif_apps(st: St) -> Vec<Value> {
+    let muted = st.engine.with_store(|s| s.config.settings.muted_apps.clone());
+    let seen = st.notif_apps.lock().unwrap().clone();
+    let mut out: Vec<Value> = seen.iter().map(|(p, n)| json!({"pkg": p, "name": n, "muted": muted.contains(p)})).collect();
+    for p in muted.iter().filter(|p| !seen.iter().any(|(s, _)| s == *p)) {
+        out.push(json!({"pkg": p, "name": p, "muted": true}));
+    }
+    out
+}
+
+#[tauri::command]
+fn set_app_muted(st: St, pkg: String, muted: bool) -> Result<(), String> {
+    st.engine.with_store(|s| {
+        let m = &mut s.config.settings.muted_apps;
+        m.retain(|p| *p != pkg);
+        if muted {
+            m.push(pkg);
+        }
+        s.save().map_err(|e| e.to_string())
+    })
+}
+
+/// A text message from the phone: copy its verification code, and show a notification.
+fn on_sms(app: &AppHandle, peer: &str, from: Option<&str>, body: Option<&str>, code: Option<&str>, source: Option<&str>) {
+    let st = app.state::<App>();
+    let s = st.engine.with_store(|s| s.config.settings.clone());
+    let copied = match code {
+        Some(c) if s.copy_sms_codes => {
+            st.sync.recopy(c.to_string());
+            true
+        }
+        _ => false,
+    };
+    if !s.phone_notifications {
+        return;
+    }
+    let phone = st.engine.peers().into_iter().find(|p| p.id == peer).map(|p| p.display_name().to_string()).unwrap_or_else(|| "手机".into());
+    let who = source.or(from).unwrap_or("短信");
+    let (title, line2) = match (code, body) {
+        (Some(c), None) => (format!("验证码 {c}"), if copied { "已复制到剪贴板".to_string() } else { String::new() }),
+        (Some(c), Some(_)) if copied => (format!("{who} · 验证码 {c} 已复制"), String::new()),
+        _ => (who.to_string(), String::new()),
+    };
+    let first = match body {
+        Some(b) => b.to_string(),
+        None => format!("{who} · 来自{phone}"),
+    };
+    let lines: Vec<&str> = [first.as_str(), line2.as_str()].into_iter().filter(|l| !l.is_empty()).collect();
+    let title = title.clone();
+    let lines: Vec<String> = lines.into_iter().map(str::to_owned).collect();
+    // WinRT calls can take a moment; keep them off the event loop.
+    std::thread::spawn(move || notify::show(&title, &lines.iter().map(String::as_str).collect::<Vec<_>>()));
 }
 
 /// `--send <files>` from the Explorer "Send to" menu.
@@ -687,7 +793,7 @@ fn main() {
             files::open_files, files::local_places, files::local_list, files::local_mkdir, files::local_rename,
             files::local_delete, files::local_open, files::local_reveal, files::local_paste, files::phone_fs,
             files::phone_list, files::phone_thumb, files::phone_open, files::queue_state, files::queue_add,
-            files::queue_cancel, files::queue_clear, clip_history, clip_recopy, clip_history_clear, transfers_clear, set_alias, pick_download_dir
+            files::queue_cancel, files::queue_clear, clip_history, clip_recopy, clip_history_clear, transfers_clear, set_alias, pick_download_dir, test_notification, notif_apps, set_app_muted
         ])
         .setup(move |app| {
             let handle = app.handle().clone();
@@ -704,6 +810,7 @@ fn main() {
                 sync,
                 transfers: Mutex::new(Vec::new()),
                 pair_requests: Mutex::new(Vec::new()),
+                notif_apps: Mutex::new(Vec::new()),
                 pause_item: Mutex::new(None),
                 setup_cancel: Mutex::new(None),
                 hotspot_ours: AtomicBool::new(false),

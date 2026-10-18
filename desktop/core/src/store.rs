@@ -38,6 +38,14 @@ pub struct Settings {
     pub adb_path: Option<PathBuf>,
     /// "system", "light" or "dark".
     pub theme: String,
+    /// Put verification codes from the phone's text messages on the clipboard.
+    pub copy_sms_codes: bool,
+    /// Show phone messages (codes, texts) as Windows notifications.
+    pub phone_notifications: bool,
+    /// Phone apps (package names) whose notifications aren't shown.
+    pub muted_apps: Vec<String>,
+    /// Skip a phone app's notifications while its PC version (WeChat, QQ...) is running.
+    pub skip_running_apps: bool,
 }
 
 impl Default for Settings {
@@ -50,6 +58,10 @@ impl Default for Settings {
             auto_adb: true,
             adb_path: None,
             theme: "system".into(),
+            copy_sms_codes: true,
+            phone_notifications: true,
+            muted_apps: Vec::new(),
+            skip_running_apps: true,
         }
     }
 }

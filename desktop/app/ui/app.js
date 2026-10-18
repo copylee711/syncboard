@@ -244,6 +244,7 @@ $("sendBtn").onclick = () => call("pick_and_send", { peer: null });
 $("folderBtn2").onclick = () => call("open_downloads");
 $("downloadPick").onclick = () => call("pick_download_dir");
 $("filesBtn").onclick = () => call("open_files");
+$("testNotify").onclick = () => call("test_notification").then(() => toast("已发送，右下角应该能看到")).catch(() => {});
 $("syncToggle").onchange = (e) => call("set_paused", { paused: !e.target.checked, minutes: null });
 $("autostart").onchange = (e) => call("set_autostart", { on: e.target.checked }).catch(refresh);
 $("sendto").onchange = (e) =>
@@ -540,6 +541,31 @@ $("transfersClear").onclick = async () => {
   state.transfers = state.transfers.filter((t) => t.type === "fileProgress");
   renderTransfers();
 };
+async function openApps() {
+  const apps = await call("notif_apps");
+  $("appsList").innerHTML = apps.length
+    ? apps
+        .map(
+          (a) => `<label class="row"><span>${esc(a.name)}<small>${esc(a.pkg)}</small></span><span class="switch"><input type="checkbox" data-pkg="${esc(a.pkg)}" ${a.muted ? "" : "checked"} /><i></i></span></label>`
+        )
+        .join("")
+    : `<p class="fine">还没有收到过手机通知。手机上开启「手机通知同步」后，发来通知的 App 会出现在这里。</p>`;
+  $("appsSheet").hidden = false;
+}
+$("appsBtn").onclick = () => {
+  openApps();
+};
+$("appsList").onchange = (e) => {
+  const pkg = e.target.dataset.pkg;
+  if (pkg) call("set_app_muted", { pkg, muted: !e.target.checked });
+};
+$("appsDone").onclick = () => {
+  $("appsSheet").hidden = true;
+};
+$("appsSheet").onclick = (e) => {
+  if (e.target.id === "appsSheet") $("appsSheet").hidden = true;
+};
+
 let aliasPeer = null;
 function openAlias(p) {
   if (!p) return;

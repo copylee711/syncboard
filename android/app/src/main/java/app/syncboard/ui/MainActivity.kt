@@ -709,6 +709,15 @@ private fun SettingsScreen(
                 ToggleRow("截屏后自动复制", s.optBoolean("copyScreenshots"),
                     "新截图会放进手机和电脑剪贴板，可直接粘贴") { set("copyScreenshots", it) }
                 Divider()
+                ToggleRow("短信验证码同步到电脑", s.optBoolean("syncSmsCodes", true),
+                    "收到验证码短信时，只把验证码发到电脑并复制，短信内容不会发送") { set("syncSmsCodes", it) }
+                Divider()
+                ToggleRow("新短信在电脑上提醒", s.optBoolean("syncSms"),
+                    "每条新短信（发件人和内容）都会发到电脑，用 Windows 通知显示") { set("syncSms", it) }
+                Divider()
+                ToggleRow("手机通知同步到电脑", s.optBoolean("syncNotifications"),
+                    "微信、QQ 等 App 的新通知用 Windows 通知显示，5G 消息里的验证码也能同步。开启后 SyncBoard 会常驻一个接收通知的轻量进程") { set("syncNotifications", it) }
+                Divider()
                 ToggleRow("拍照后自动复制", s.optBoolean("copyCameraPhotos"),
                     "相机拍的新照片（DCIM/Camera）会放进手机和电脑剪贴板") { set("copyCameraPhotos", it) }
                 Divider()

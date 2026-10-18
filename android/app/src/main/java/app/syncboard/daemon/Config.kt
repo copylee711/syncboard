@@ -50,6 +50,15 @@ class Settings(
     var copyCameraPhotos: Boolean = false,
     /** Also new images in these folders (MediaStore relative paths, e.g. "Pictures/WeiXin"). */
     var copyFolders: List<String> = emptyList(),
+    /** Send the verification code of each new text message to the PCs (not the message). */
+    var syncSmsCodes: Boolean = true,
+    /** Send every new text message (sender and text) to the PCs, to show as a notification. */
+    var syncSms: Boolean = false,
+    /**
+     * Pass app notifications to the PCs (and find codes in 5G messages, which never reach
+     * the SMS database). Needs the app's notification listener, granted by the daemon.
+     */
+    var syncNotifications: Boolean = false,
     /**
      * Switch developer options off once a PC has set this phone up over adb (the system
      * advises against leaving them on). The app switches them on briefly whenever the
@@ -62,7 +71,7 @@ class Settings(
         .put("autoAcceptFiles", autoAcceptFiles).put("paused", paused)
         .put("hideAccessToast", hideAccessToast).put("copyScreenshots", copyScreenshots)
         .put("autoDisableDevOptions", autoDisableDevOptions)
-        .put("copyCameraPhotos", copyCameraPhotos).put("copyFolders", JSONArray(copyFolders))
+        .put("syncSmsCodes", syncSmsCodes).put("syncSms", syncSms).put("syncNotifications", syncNotifications).put("copyCameraPhotos", copyCameraPhotos).put("copyFolders", JSONArray(copyFolders))
 
     fun update(o: JSONObject) {
         if (o.has("syncText")) syncText = o.getBoolean("syncText")
@@ -72,6 +81,9 @@ class Settings(
         if (o.has("hideAccessToast")) hideAccessToast = o.getBoolean("hideAccessToast")
         if (o.has("copyScreenshots")) copyScreenshots = o.getBoolean("copyScreenshots")
         if (o.has("autoDisableDevOptions")) autoDisableDevOptions = o.getBoolean("autoDisableDevOptions")
+        if (o.has("syncSmsCodes")) syncSmsCodes = o.getBoolean("syncSmsCodes")
+        if (o.has("syncSms")) syncSms = o.getBoolean("syncSms")
+        if (o.has("syncNotifications")) syncNotifications = o.getBoolean("syncNotifications")
         if (o.has("copyCameraPhotos")) copyCameraPhotos = o.getBoolean("copyCameraPhotos")
         o.optJSONArray("copyFolders")?.let { a -> copyFolders = List(a.length()) { a.getString(it) }.distinct() }
     }
