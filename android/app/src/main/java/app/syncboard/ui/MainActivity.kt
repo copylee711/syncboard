@@ -221,15 +221,19 @@ private fun HomeScreen(
                 val pcs = st.optJSONArray("pcs")
                 val list = (0 until (pcs?.length() ?: 0)).map { pcs!!.getJSONObject(it) }
                 val online = list.filter { it.optBoolean("connected") }
+                // Every paired PC refused us: waiting won't help, it has to be paired again.
+                val repair = list.isNotEmpty() && online.isEmpty() &&
+                    list.all { it.optString("state") in setOf("rejected", "keyMismatch") }
                 val paused = st.optJSONObject("settings")?.optBoolean("paused") == true
 
                 // status block
                 Row(verticalAlignment = Alignment.CenterVertically, modifier = Modifier.padding(top = 12.dp)) {
-                    Dot(if (online.isNotEmpty()) p.green else if (list.isNotEmpty()) p.amber else p.muted)
+                    Dot(if (online.isNotEmpty()) p.green else if (repair) p.danger else if (list.isNotEmpty()) p.amber else p.muted)
                     Spacer(Modifier.width(8.dp))
                     Text(
                         when {
                             online.isNotEmpty() -> "已连接 · ${online[0].optString("addr")}"
+                            repair -> "需要重新配对"
                             list.isNotEmpty() -> "正在寻找电脑…"
                             else -> "未配对"
                         },
@@ -241,6 +245,7 @@ private fun HomeScreen(
                 Text(
                     when {
                         online.isNotEmpty() -> online.joinToString("、") { it.optString("name") }
+                        repair -> "请重新配对电脑"
                         list.isNotEmpty() -> "等待电脑上线"
                         else -> "还没有配对的电脑"
                     },
@@ -251,15 +256,16 @@ private fun HomeScreen(
                     when {
                         paused -> "同步已暂停"
                         online.isNotEmpty() -> "复制的文字和图片会自动出现在电脑上"
+                        repair -> "电脑上已没有这台手机的配对。先「移除」下面的电脑，再在电脑 SyncBoard 点「添加手机」，用这里的「扫码配对」扫码"
                         list.isNotEmpty() -> "确认电脑上的 SyncBoard 正在运行，且两边网络互通"
-                        else -> "在电脑上打开 SyncBoard，点「添加手机」→「已安装 App」，然后在这里扫码"
+                        else -> "在电脑上打开 SyncBoard，点「添加手机」→「手机 App」，然后在这里扫码"
                     },
                     fontSize = 14.sp, color = p.muted, lineHeight = 20.sp, modifier = Modifier.padding(top = 4.dp),
                 )
                 Row(Modifier.fillMaxWidth().padding(top = 20.dp), horizontalArrangement = Gap) {
                     InkButton("发送文件", Modifier.weight(1f), enabled = online.isNotEmpty()) { pickFiles.launch(arrayOf("*/*")) }
-                    LineButton(if (list.isEmpty()) "扫码配对" else "添加电脑", Modifier.weight(1f)) {
-                        if (list.isEmpty()) onScan() else showAdd = true
+                    LineButton(if (list.isEmpty() || repair) "扫码配对" else "添加电脑", Modifier.weight(1f)) {
+                        if (list.isEmpty() || repair) onScan() else showAdd = true
                     }
                 }
 
@@ -518,7 +524,7 @@ private fun ScanScreen(onBack: () -> Unit, onResult: (String) -> Unit) {
             TextButton(onBack) { Text("‹ 返回", color = androidx.compose.ui.graphics.Color.White, fontSize = 16.sp) }
         }
         Text(
-            if (granted) "扫描电脑 SyncBoard「添加手机 → 已安装 App」中的二维码" else "需要相机权限才能扫码",
+            if (granted) "扫描电脑 SyncBoard「添加手机 → 手机 App」中的二维码" else "需要相机权限才能扫码",
             color = androidx.compose.ui.graphics.Color.White, fontSize = 14.sp,
             modifier = Modifier.align(Alignment.BottomCenter).navigationBarsPadding().padding(bottom = 48.dp, start = 24.dp, end = 24.dp),
         )

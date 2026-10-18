@@ -78,6 +78,13 @@ pub fn open_path(p: &std::path::Path) {
     let _ = Command::new("explorer").arg(p).spawn();
 }
 
+/// Opens an http(s) URL in the default browser.
+pub fn open_url(url: &str) {
+    if url.starts_with("https://") {
+        let _ = Command::new("rundll32").args(["url.dll,FileProtocolHandler", url]).spawn();
+    }
+}
+
 /// Terminates direct child processes of this process with the given image name.
 pub fn kill_child_processes(image: &str) {
     use windows_sys::Win32::Foundation::{CloseHandle, INVALID_HANDLE_VALUE};

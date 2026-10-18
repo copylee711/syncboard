@@ -123,6 +123,17 @@ fn pairing_qr(st: St) -> Value {
     json!({"uri": uri, "svg": qr_svg(&uri)})
 }
 
+#[tauri::command]
+fn apk_qr() -> Value {
+    let url = update::apk_url();
+    json!({"url": url, "svg": qr_svg(&url)})
+}
+
+#[tauri::command]
+fn open_releases() {
+    system::open_url(&format!("{}/releases", update::REPO));
+}
+
 // ---------- phone setup (USB / wireless / hotspot) ----------
 
 fn adb_path(st: &App) -> Result<PathBuf, String> {
@@ -558,7 +569,7 @@ fn main() {
         .invoke_handler(tauri::generate_handler![
             get_state, pairing_qr, answer_pair, unpair, send_paths, pick_and_send, set_settings,
             set_paused, set_autostart, set_sendto, open_downloads, adb_start, setup_cancel, setup_usb,
-            setup_wifi, hotspot_start, hotspot_stop, stop_phone_service, check_update, install_update
+            setup_wifi, hotspot_start, hotspot_stop, stop_phone_service, check_update, install_update, apk_qr, open_releases
         ])
         .setup(move |app| {
             let handle = app.handle().clone();

@@ -11,6 +11,7 @@
     <img src="logo.png" alt="" class="tb-logo" data-tauri-drag-region />
     <span class="tb-title" data-tauri-drag-region>SyncBoard</span>
     <span class="tb-spacer" data-tauri-drag-region></span>
+    <button class="tb-btn" id="githubBtn" aria-label="GitHub 发布页" title="GitHub 发布页（下载新版本、手机安装包）"><svg viewBox="0 0 16 16" class="gh"><path d="M8 0C3.58 0 0 3.58 0 8c0 3.54 2.29 6.53 5.47 7.59.4.07.55-.17.55-.38 0-.19-.01-.82-.01-1.49-2.01.37-2.53-.49-2.69-.94-.09-.23-.48-.94-.82-1.13-.28-.15-.68-.52-.01-.53.63-.01 1.08.58 1.23.82.72 1.21 1.87.87 2.33.66.07-.52.28-.87.51-1.07-1.78-.2-3.64-.89-3.64-3.95 0-.87.31-1.59.82-2.15-.08-.2-.36-1.02.08-2.12 0 0 .67-.21 2.2.82.64-.18 1.32-.27 2-.27.68 0 1.36.09 2 .27 1.53-1.04 2.2-.82 2.2-.82.44 1.1.16 1.92.08 2.12.51.56.82 1.27.82 2.15 0 3.07-1.87 3.75-3.65 3.95.29.25.54.73.54 1.48 0 1.07-.01 1.93-.01 2.2 0 .21.15.46.55.38A8.013 8.013 0 0016 8c0-4.42-3.58-8-8-8z"/></svg></button>
     <button class="tb-btn" id="minBtn" aria-label="最小化"><svg viewBox="0 0 12 12"><path d="M2 6h8"/></svg></button>
     <button class="tb-btn close" id="closeBtn" aria-label="关闭到托盘" title="关闭到托盘（轻量模式）"><svg viewBox="0 0 12 12"><path d="M2.5 2.5l7 7m0-7l-7 7"/></svg></button>
   </div>
@@ -94,12 +95,12 @@
         <button class="icon-btn" id="closePair" aria-label="关闭"><svg viewBox="0 0 12 12"><path d="M2.5 2.5l7 7m0-7l-7 7"/></svg></button>
       </div>
       <div class="tabs" role="tablist">
-        <button role="tab" data-tab="wifi" class="on">无线</button>
+        <button role="tab" data-tab="app" class="on">手机 App</button>
+        <button role="tab" data-tab="wifi">无线</button>
         <button role="tab" data-tab="usb">数据线</button>
-        <button role="tab" data-tab="app">已安装 App</button>
       </div>
 
-      <div class="tab" data-pane="wifi">
+      <div class="tab" data-pane="wifi" hidden>
         <div class="qr" id="wifiQr"></div>
         <ol class="steps">
           <li>手机连接与电脑相同的 Wi-Fi</li>
@@ -127,13 +128,20 @@
         </ol>
       </div>
 
-      <div class="tab" data-pane="app" hidden>
+      <div class="tab" data-pane="app">
         <div class="qr" id="qr"></div>
         <ol class="steps">
-          <li>在手机 SyncBoard 里点「扫码配对」</li>
-          <li>对准上方二维码</li>
+          <li>打开手机上的 SyncBoard，点「扫码配对」，对准上方二维码</li>
+          <li>第一次使用时，App 会一步步带你打开「无线调试」，然后切到本窗口的「无线」页扫码，其余步骤自动完成</li>
         </ol>
         <div class="manual">无法扫码时选「手动连接」，输入 <b id="ips"></b></div>
+        <div class="get-app">
+          <div class="qr small" id="apkQr"></div>
+          <div>
+            <b>手机还没装 SyncBoard？</b>
+            <p>用手机浏览器扫码下载安装包（需要 Android 10 及以上）。也可以在 <button class="link" id="releasesLink">GitHub 发布页</button> 下载。</p>
+          </div>
+        </div>
       </div>
 
       <div class="setup-status" id="setupStatus" hidden><span class="spinner"></span><span id="setupText"></span></div>

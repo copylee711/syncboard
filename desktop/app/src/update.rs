@@ -4,7 +4,7 @@ use std::os::windows::process::CommandExt;
 use std::path::{Path, PathBuf};
 use std::process::Command;
 
-const REPO: &str = "https://github.com/copylee711/syncboard";
+pub const REPO: &str = "https://github.com/copylee711/syncboard";
 pub const VERSION: &str = env!("CARGO_PKG_VERSION");
 const CREATE_NO_WINDOW: u32 = 0x0800_0000;
 
@@ -40,6 +40,11 @@ pub fn latest_version() -> Result<String, String> {
         })
         .filter(|v| !version_tuple(v).is_empty())
         .ok_or_else(|| "没有找到发布版本".into())
+}
+
+/// Direct download of the phone APK released with this desktop version.
+pub fn apk_url() -> String {
+    format!("{REPO}/releases/download/v{VERSION}/SyncBoard-{VERSION}.apk")
 }
 
 fn old_exe(exe: &Path) -> PathBuf {

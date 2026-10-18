@@ -133,7 +133,7 @@ async function refresh() {
 
 // ---------- adding a phone ----------
 
-let tab = "wifi";
+let tab = "app";
 
 function setStatus(stage, text) {
   const el = $("setupStatus");
@@ -159,6 +159,7 @@ async function showTab(name) {
   } else if (name === "app") {
     const load = async () => ($("qr").innerHTML = (await call("pairing_qr")).svg);
     load();
+    if (!$("apkQr").innerHTML) call("apk_qr").then((r) => ($("apkQr").innerHTML = r.svg));
     qrTimer = setInterval(load, 4 * 60 * 1000); // tokens expire after 5 minutes
   } else if (name === "hotspot") {
     $("hotspotQr").innerHTML = "";
@@ -174,7 +175,8 @@ async function showTab(name) {
 
 function openPair() {
   $("pairSheet").hidden = false;
-  showTab(state.peers.length ? "app" : "wifi");
+  // The phone app guides the user to the right Settings switches, so start there.
+  showTab("app");
 }
 
 function closePair() {
@@ -217,6 +219,7 @@ const win = window.__TAURI__.window.getCurrentWindow();
 $("minBtn").onclick = () => win.minimize();
 $("closeBtn").onclick = () => win.close();
 $("addBtn").onclick = openPair;
+$("githubBtn").onclick = $("releasesLink").onclick = () => call("open_releases");
 $("closePair").onclick = closePair;
 $("pairSheet").onclick = (e) => e.target.id === "pairSheet" && closePair();
 $("acceptBtn").onclick = () => answer(true);

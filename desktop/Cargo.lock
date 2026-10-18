@@ -3679,7 +3679,7 @@ dependencies = [
 
 [[package]]
 name = "syncboard"
-version = "0.1.0"
+version = "0.2.0"
 dependencies = [
  "miniz_oxide 0.8.9",
  "qrcode",
@@ -3698,7 +3698,7 @@ dependencies = [
 
 [[package]]
 name = "syncboard-core"
-version = "0.1.0"
+version = "0.2.0"
 dependencies = [
  "aes-gcm",
  "anyhow",
