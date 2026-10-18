@@ -13,11 +13,13 @@ use std::time::{Duration, Instant};
 const CREATE_NO_WINDOW: u32 = 0x0800_0000;
 const PACKAGE: &str = "app.syncboard";
 
-/// Must stay in sync with `Main.LAUNCH_COMMAND` in the Android daemon.
+/// Must stay in sync with `Main.LAUNCH_COMMAND` in the Android daemon. The background
+/// job must be a plain command: with `[ ... ] && cmd &`, sh backgrounds a subshell that
+/// keeps adb's output pipe open while the daemon runs, so `adb shell` never returns.
 fn launch_command(extra: &str) -> String {
     format!(
-        "p=$(pm path {PACKAGE} | head -n1 | cut -d: -f2); \
-         [ -n \"$p\" ] && CLASSPATH=$p nohup setsid app_process /system/bin --nice-name=syncboard_daemon \
+        "p=$(pm path {PACKAGE} | head -n1 | cut -d: -f2); [ -n \"$p\" ] || exit 1; \
+         CLASSPATH=$p nohup setsid app_process /system/bin --nice-name=syncboard_daemon \
          app.syncboard.daemon.Main {extra} </dev/null >/dev/null 2>&1 &"
     )
 }

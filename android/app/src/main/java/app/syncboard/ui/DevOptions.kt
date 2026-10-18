@@ -66,26 +66,23 @@ object DevOptions {
         .putExtra(":settings:show_fragment_args", Bundle().apply { putString(":settings:fragment_args_key", key) })
         .addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
 
-    private fun Context.tryStart(vararg intents: Intent): Intent? =
-        intents.firstOrNull { runCatching { startActivity(it) }.isSuccess }
+    private fun Context.tryStart(vararg intents: Intent): Boolean =
+        intents.any { runCatching { startActivity(it) }.isSuccess }
 
-    /** vivo/OriginOS keeps the build number one level down, on its 版本信息 page. */
-    private fun vivoVersionInfo() = Intent("android.settings.SETTINGS.SUB_SETTINGS")
-        .setComponent(ComponentName("com.android.settings", "com.vivo.settings.VivoSubSettings"))
-        .putExtra(":settings:show_fragment", "com.vivo.settings.aboutphone.versioninfo.VivoVersionInfoSettings")
-        .addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
-
-    /** The page with the build number that unlocks developer options. */
+    /**
+     * "About phone", for the build number that unlocks developer options. vivo/OriginOS
+     * keeps it one level down on 版本信息, a page other apps can't open directly
+     * (VivoSubSettings closes itself when another app names the fragment), so the hint
+     * says where to tap.
+     */
     fun openBuildNumber(ctx: Context) {
-        val vivo = android.os.Build.MANUFACTURER.equals("vivo", ignoreCase = true)
-        val opened = ctx.tryStart(
-            *listOfNotNull(vivoVersionInfo().takeIf { vivo }).toTypedArray(),
+        ctx.tryStart(
             highlight(Settings.ACTION_DEVICE_INFO_SETTINGS, "build_number"),
             Intent(Settings.ACTION_SETTINGS).addFlags(Intent.FLAG_ACTIVITY_NEW_TASK),
         )
-        if (opened?.component != null) {
-            guide(ctx, "解锁开发者选项", "连续点击「软件版本号」7 次，然后返回 SyncBoard",
-                "连续点击「软件版本号」7 次，看到「已进入开发者模式」后返回 SyncBoard，再点「去打开」。")
+        if (android.os.Build.MANUFACTURER.equals("vivo", ignoreCase = true)) {
+            guide(ctx, "解锁开发者选项", "滑到底点「版本信息」，连续点击「软件版本号」7 次",
+                "在「关于手机」滑到底，点「版本信息」，再连续点击「软件版本号」7 次。看到「已进入开发者模式」后返回 SyncBoard，再点「去打开」。")
         } else {
             guide(ctx, "解锁开发者选项", "连续点击「版本号」7 次，然后返回 SyncBoard",
                 "连续点击「版本号」7 次，看到「您已处于开发者模式」后返回 SyncBoard。找不到的话，版本号可能在「关于手机」的「版本信息」或「软件信息」里。")
@@ -161,7 +158,7 @@ object DevOptions {
                 "com.android.settings", "com.android.settings.development.qstile.DevelopmentTiles\$WirelessDebugging"))
             .setPackage("com.android.settings")
             .addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
-        if (ctx.tryStart(tile) != null) {
+        if (ctx.tryStart(tile)) {
             guide(ctx, "扫码配对电脑", "点「使用二维码配对设备」，扫电脑上的码", "在电脑 SyncBoard 点「添加手机」→「无线」，然后在这里点「使用二维码配对设备」扫描电脑上的二维码。")
         } else {
             openWirelessDebuggingSwitch(ctx)

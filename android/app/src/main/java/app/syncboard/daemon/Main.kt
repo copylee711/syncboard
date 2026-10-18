@@ -16,10 +16,14 @@ object Main {
     const val PACKAGE = "app.syncboard"
     private const val NICE_NAME = "syncboard_daemon"
 
-    /** Shell command that starts the daemon detached; safe to run more than once. */
+    /**
+     * Shell command that starts the daemon detached; safe to run more than once. The
+     * background job is a plain command so `adb shell` returns at once (a backgrounded
+     * `[ ... ] && cmd` subshell would hold adb's output open while the daemon runs).
+     */
     const val LAUNCH_COMMAND =
-        "p=\$(pm path $PACKAGE | head -n1 | cut -d: -f2); " +
-            "[ -n \"\$p\" ] && CLASSPATH=\$p nohup setsid app_process /system/bin --nice-name=$NICE_NAME " +
+        "p=\$(pm path $PACKAGE | head -n1 | cut -d: -f2); [ -n \"\$p\" ] || exit 1; " +
+            "CLASSPATH=\$p nohup setsid app_process /system/bin --nice-name=$NICE_NAME " +
             "app.syncboard.daemon.Main </dev/null >/dev/null 2>&1 &"
 
     val stateDir = File("/data/local/tmp/syncboard")
