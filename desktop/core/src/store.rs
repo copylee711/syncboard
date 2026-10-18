@@ -46,6 +46,8 @@ pub struct Settings {
     pub muted_apps: Vec<String>,
     /// Skip a phone app's notifications while its PC version (WeChat, QQ...) is running.
     pub skip_running_apps: bool,
+    /// Shrink images from the phone to what Windows clipboard history (Win+V) keeps.
+    pub fit_clipboard_history: bool,
 }
 
 impl Default for Settings {
@@ -62,6 +64,7 @@ impl Default for Settings {
             phone_notifications: true,
             muted_apps: Vec::new(),
             skip_running_apps: true,
+            fit_clipboard_history: false,
         }
     }
 }

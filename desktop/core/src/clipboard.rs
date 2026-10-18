@@ -261,6 +261,27 @@ pub fn dib_to_png(dib: &[u8]) -> Option<Vec<u8>> {
     Some(out.into_inner())
 }
 
+/// Largest image Windows clipboard history (Win+V) keeps: measured on Windows 11 26300, it
+/// drops images over about 8 MiB as 32-bit pixels (945×2100 kept, 1008×2240 dropped),
+/// whatever formats they are offered in.
+pub const HISTORY_MAX_PIXELS: u64 = 2_000_000;
+
+/// Scales a PNG down to at most `max_pixels`, keeping its aspect; None if it already fits
+/// (or can't be decoded).
+pub fn fit_pixels(png: &[u8], max_pixels: u64) -> Option<Vec<u8>> {
+    let img = image::load_from_memory_with_format(png, image::ImageFormat::Png).ok()?;
+    let (w, h) = (img.width() as u64, img.height() as u64);
+    if w * h <= max_pixels {
+        return None;
+    }
+    let k = (max_pixels as f64 / (w * h) as f64).sqrt();
+    let (nw, nh) = (((w as f64 * k) as u32).max(1), ((h as f64 * k) as u32).max(1));
+    let small = img.resize_exact(nw, nh, image::imageops::FilterType::Triangle);
+    let mut out = std::io::Cursor::new(Vec::new());
+    small.write_to(&mut out, image::ImageFormat::Png).ok()?;
+    Some(out.into_inner())
+}
+
 /// PNG → 32bpp bottom-up BI_RGB DIB.
 pub fn png_to_dib(png: &[u8]) -> Option<Vec<u8>> {
     let img = image::load_from_memory_with_format(png, image::ImageFormat::Png).ok()?.to_rgba8();
@@ -286,6 +307,20 @@ pub fn png_to_dib(png: &[u8]) -> Option<Vec<u8>> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn fit_pixels_shrinks_only_large_images() {
+        let png = |w, h| {
+            let mut out = std::io::Cursor::new(Vec::new());
+            image::DynamicImage::new_rgba8(w, h).write_to(&mut out, image::ImageFormat::Png).unwrap();
+            out.into_inner()
+        };
+        assert!(fit_pixels(&png(100, 100), 20_000).is_none());
+        let small = fit_pixels(&png(1260, 2800), HISTORY_MAX_PIXELS).unwrap();
+        let img = image::load_from_memory(&small).unwrap();
+        assert!(img.width() as u64 * img.height() as u64 <= HISTORY_MAX_PIXELS);
+        assert_eq!((img.width() as f64 / img.height() as f64 * 100.0).round(), 45.0);
+    }
 
     #[test]
     fn dib_roundtrip() {

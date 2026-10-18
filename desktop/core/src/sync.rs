@@ -112,6 +112,13 @@ impl ClipSync {
         }
         *self.last.lock().unwrap() = c.hash();
         self.remember(&c, "phone");
+        let fit = self.engine.with_store(|s| s.config.settings.fit_clipboard_history);
+        let c = match c {
+            ClipContent::Image(png) if fit => {
+                ClipContent::Image(clipboard::fit_pixels(&png, clipboard::HISTORY_MAX_PIXELS).unwrap_or(png))
+            }
+            c => c,
+        };
         if let Some(w) = self.writer.lock().unwrap().as_ref() {
             w.write(c);
         }
