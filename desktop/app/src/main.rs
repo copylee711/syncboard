@@ -1,6 +1,7 @@
 #![cfg_attr(not(debug_assertions), windows_subsystem = "windows")]
 
 mod adb;
+mod files;
 mod hotspot;
 mod system;
 mod update;
@@ -36,9 +37,19 @@ struct App {
     /// The wireless pairing in progress: its QR service name, and where the phone app
     /// reported the pairing port (see `Event::AdbPairHint`).
     wifi_pairing: Mutex<Option<(String, Arc<Mutex<Option<adb::PairHint>>>)>>,
+    /// The file manager's transfers.
+    queue: files::Queue,
 }
 
 type St<'a> = tauri::State<'a, App>;
+
+impl App {
+    /// Whether the file manager's queue is waiting on the engine transfer `id`
+    /// (those stay out of the main window's transfer list).
+    fn queue_owns(&self, id: &str) -> bool {
+        self.queue.owns(id)
+    }
+}
 
 // ---------- window (light mode) ----------
 
@@ -65,7 +76,7 @@ fn show_window(app: &AppHandle) {
 }
 
 fn notify_ui(app: &AppHandle, name: &str, payload: Value) {
-    if app.get_webview_window(MAIN).is_some() {
+    if !app.webview_windows().is_empty() {
         let _ = app.emit(name, payload);
     }
 }
@@ -459,6 +470,9 @@ fn on_engine_event(app: &AppHandle, ev: Event) {
             st.pair_requests.lock().unwrap().push(v.clone());
             show_window(app);
         }
+        // The file manager shows its own transfers.
+        Event::FileProgress { id, done, .. } if st.queue_owns(id) => return files::on_progress(app, id, *done),
+        Event::FileDone { id, .. } | Event::FileFailed { id, .. } if st.queue_owns(id) => return,
         Event::FileProgress { id, .. } | Event::FileDone { id, .. } | Event::FileFailed { id, .. } => {
             let mut t = st.transfers.lock().unwrap();
             t.retain(|x| x["id"] != *id);
@@ -476,6 +490,24 @@ fn on_engine_event(app: &AppHandle, ev: Event) {
 /// `--send <files>` from the Explorer "Send to" menu.
 fn handle_args(app: &AppHandle, args: &[String], first_launch: bool) {
     eprintln!("[app] args {args:?} first={first_launch}");
+    if args.iter().any(|a| a == "--files") {
+        files::show(app);
+        return;
+    }
+    // `--setup-adb <serial>`: set up and pair one adb device (an emulator, a phone on a
+    // remote adb server) the way 改用数据线 does, without the UI.
+    if let Some(serial) = args.iter().position(|a| a == "--setup-adb").and_then(|i| args.get(i + 1)).cloned() {
+        let app = app.clone();
+        std::thread::spawn(move || {
+            let st = app.state::<App>();
+            let r = adb_path(&st).and_then(|adb| {
+                let uri = st.engine.pairing_uri();
+                adb::setup_device(&adb, &serial, &uri, true, &|t| eprintln!("[setup-adb] {t}"))
+            });
+            eprintln!("[setup-adb] {serial}: {r:?}");
+        });
+        return;
+    }
     if let Some(i) = args.iter().position(|a| a == "--send") {
         let paths: Vec<PathBuf> = args[i + 1..].iter().map(PathBuf::from).collect();
         if paths.is_empty() {
@@ -509,11 +541,12 @@ fn build_tray(app: &tauri::App) -> tauri::Result<()> {
     let p30 = MenuItem::with_id(h, "pause30", "暂停 30 分钟", true, None::<&str>)?;
     let pause_menu = Submenu::with_items(h, "暂停", true, &[&paused, &p5, &p30])?;
     let send = MenuItem::with_id(h, "send", "发送文件到手机…", true, None::<&str>)?;
+    let files_item = MenuItem::with_id(h, "files", "文件管理", true, None::<&str>)?;
     let adb = MenuItem::with_id(h, "adb", "启动手机服务 (ADB)", true, None::<&str>)?;
     let folder = MenuItem::with_id(h, "folder", "打开接收文件夹", true, None::<&str>)?;
     let quit = MenuItem::with_id(h, "quit", "退出", true, None::<&str>)?;
     let sep = || PredefinedMenuItem::separator(h);
-    let menu = Menu::with_items(h, &[&open, &sep()?, &pause_menu, &send, &folder, &adb, &sep()?, &quit])?;
+    let menu = Menu::with_items(h, &[&open, &sep()?, &pause_menu, &send, &files_item, &folder, &adb, &sep()?, &quit])?;
     *app.state::<App>().pause_item.lock().unwrap() = Some(paused);
 
     TrayIconBuilder::with_id("main")
@@ -532,6 +565,7 @@ fn build_tray(app: &tauri::App) -> tauri::Result<()> {
                 "pause5" => apply_pause(app, &st, true, Some(5)),
                 "pause30" => apply_pause(app, &st, true, Some(30)),
                 "send" => pick_files(app.clone(), None),
+                "files" => files::show(app),
                 "folder" => system::open_path(&st.engine.with_store(|s| s.download_dir())),
                 "adb" => {
                     let custom = st.engine.with_store(|s| s.config.settings.adb_path.clone());
@@ -600,7 +634,11 @@ fn main() {
         .invoke_handler(tauri::generate_handler![
             get_state, pairing_qr, answer_pair, unpair, send_paths, pick_and_send, set_settings,
             set_paused, set_autostart, set_sendto, open_downloads, adb_start, setup_cancel, setup_usb,
-            setup_wifi, hotspot_start, hotspot_stop, stop_phone_service, check_update, install_update, apk_qr, open_releases
+            setup_wifi, hotspot_start, hotspot_stop, stop_phone_service, check_update, install_update, apk_qr, open_releases,
+            files::open_files, files::local_places, files::local_list, files::local_mkdir, files::local_rename,
+            files::local_delete, files::local_open, files::local_reveal, files::local_paste, files::phone_fs,
+            files::phone_list, files::phone_thumb, files::phone_open, files::queue_state, files::queue_add,
+            files::queue_cancel, files::queue_clear
         ])
         .setup(move |app| {
             let handle = app.handle().clone();
@@ -621,6 +659,7 @@ fn main() {
                 setup_cancel: Mutex::new(None),
                 hotspot_ours: AtomicBool::new(false),
                 wifi_pairing: Mutex::new(None),
+                queue: files::Queue::default(),
             });
             build_tray(app)?;
             update_tray(app.handle());
@@ -634,13 +673,13 @@ fn main() {
     app.run(|app, event| match event {
         // Keep running in the tray after the last window closes.
         RunEvent::ExitRequested { api, code: None, .. } => api.prevent_exit(),
-        RunEvent::WindowEvent { label, event: WindowEvent::Destroyed, .. } if label == MAIN => {
+        RunEvent::WindowEvent { label, event: WindowEvent::Destroyed, .. } if label == MAIN || label == files::FILES => {
             let app = app.clone();
             std::thread::spawn(move || {
                 std::thread::sleep(Duration::from_secs(2));
                 // Light mode: WebView2 keeps its browser process alive after the last
                 // webview closes; end it (it is recreated with the next window).
-                if app.get_webview_window(MAIN).is_none() {
+                if app.webview_windows().is_empty() {
                     system::kill_child_processes("msedgewebview2.exe");
                 }
                 system::trim_working_set();

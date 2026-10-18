@@ -235,7 +235,8 @@ $("pairSheet").onclick = (e) => e.target.id === "pairSheet" && closePair();
 $("acceptBtn").onclick = () => answer(true);
 $("rejectBtn").onclick = () => answer(false);
 $("sendBtn").onclick = () => call("pick_and_send", { peer: null });
-$("folderBtn").onclick = $("folderBtn2").onclick = () => call("open_downloads");
+$("folderBtn2").onclick = () => call("open_downloads");
+$("filesBtn").onclick = () => call("open_files");
 $("syncToggle").onchange = (e) => call("set_paused", { paused: !e.target.checked, minutes: null });
 $("autostart").onchange = (e) => call("set_autostart", { on: e.target.checked }).catch(refresh);
 $("sendto").onchange = (e) =>

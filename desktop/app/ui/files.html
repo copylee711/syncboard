@@ -1,0 +1,57 @@
+<!doctype html>
+<html lang="zh-CN" data-theme="system">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>SyncBoard 文件管理</title>
+  <link rel="stylesheet" href="style.css" />
+  <link rel="stylesheet" href="files.css" />
+</head>
+<body class="fm">
+  <div class="titlebar" data-tauri-drag-region>
+    <img src="logo.png" alt="" class="tb-logo" data-tauri-drag-region />
+    <span class="tb-title" data-tauri-drag-region>文件管理</span>
+    <span class="tb-spacer" data-tauri-drag-region></span>
+    <span class="segmented" id="layout" title="显示方式">
+      <button data-layout="both">双栏</button><button data-layout="pc">电脑</button><button data-layout="phone">手机</button>
+    </span>
+    <span class="tb-spacer" data-tauri-drag-region></span>
+    <button class="tb-btn" id="minBtn" aria-label="最小化"><svg viewBox="0 0 12 12"><path d="M2 6h8"/></svg></button>
+    <button class="tb-btn" id="maxBtn" aria-label="最大化"><svg viewBox="0 0 12 12"><rect x="2.5" y="2.5" width="7" height="7" rx="1"/></svg></button>
+    <button class="tb-btn close" id="closeBtn" aria-label="关闭"><svg viewBox="0 0 12 12"><path d="M2.5 2.5l7 7m0-7l-7 7"/></svg></button>
+  </div>
+
+  <div class="panes" id="panes" data-layout="both">
+    <section class="pane" id="pane-pc" data-side="pc"></section>
+    <section class="pane" id="pane-phone" data-side="phone"></section>
+  </div>
+
+  <div class="queue" id="queue" hidden>
+    <div class="queue-bar" id="queueBar">
+      <span class="spinner" id="queueSpin"></span>
+      <span class="queue-text" id="queueText"></span>
+      <span class="queue-speed" id="queueSpeed"></span>
+      <div class="bar queue-progress"><i id="queueProgress"></i></div>
+      <button class="icon-btn" id="queueToggle" aria-label="展开"><svg viewBox="0 0 12 12"><path d="M3 7.5l3-3 3 3"/></svg></button>
+    </div>
+    <div class="queue-list" id="queueList" hidden></div>
+  </div>
+
+  <div class="menu" id="menu" hidden></div>
+
+  <div class="sheet-backdrop" id="dialog" hidden>
+    <form class="sheet" id="dialogForm">
+      <h3 id="dialogTitle"></h3>
+      <p class="muted" id="dialogText"></p>
+      <input class="field" id="dialogInput" spellcheck="false" autocomplete="off" />
+      <div class="sheet-actions">
+        <button type="button" class="btn" id="dialogCancel">取消</button>
+        <button type="submit" class="btn ink" id="dialogOk">确定</button>
+      </div>
+    </form>
+  </div>
+
+  <div class="toasts" id="toasts"></div>
+  <script src="files.js"></script>
+</body>
+</html>

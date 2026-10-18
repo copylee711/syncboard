@@ -99,7 +99,7 @@ so older peers interoperate (they just keep retrying as before):
 | `ping` / `pong` | — | — | ping every 30 s; drop the connection after 90 s of silence |
 | `clip.text` | `id`, `hash` | UTF-8 text | ≤ 1 MiB |
 | `clip.image` | `id`, `hash`, `mime`, `size` | — | followed by `chunk`s, then `end` |
-| `file.offer` | `id`, `name`, `size` | — | |
+| `file.offer` | `id`, `name`, `size`, `dir`? | — | `dir`: a phone folder chosen in the PC's file manager (§8) |
 | `file.accept` / `file.reject` / `file.cancel` | `id` | — | |
 | `chunk` | `id`, `seq` | ≤ 256 KiB | belongs to a `clip.image` or accepted `file.offer` |
 | `end` | `id`, `sha256` (hex) | — | receiver verifies |
@@ -176,3 +176,35 @@ user scans, the app watches its own phone's `_adb-tls-pairing._tcp` services; on
 The PC answers `{"t":"ok"}` and, if `name` is the QR it is showing, pairs with
 `<sender ip>:<pair_port>` using its own password. The frame carries no secret: adb pairing still
 needs the password from the QR.
+
+## 8. File manager
+
+The PC browses and changes the phone's shared storage over the session (§3). Requests:
+
+```
+PC → phone  {"t":"fs","rid":<id>,"op":<op>, ...args}
+phone → PC  {"t":"fs.res","rid":<id>,"ok":true, ...}   body: op-specific
+            {"t":"fs.res","rid":<id>,"ok":false,"error":<message for the user>}
+```
+
+The phone only accepts paths under `/storage` (and `/sdcard`), after resolving `..` and symlinks.
+Phones without this section never answer; the PC gives up after a few seconds.
+
+| `op` | args | reply |
+|---|---|---|
+| `roots` | — | `home`, `volumes`: `[{name, path, total, free}]` |
+| `list` | `path`, `offset` | body: JSON `[{n, d, s, m}]` (name, is folder, size or item count, mtime ms); `next` when more pages remain |
+| `walk` | `path`, `offset` | body: JSON `[{p, d, s}]`, every file and folder below `path` (relative paths), paged like `list` |
+| `mkdir` | `path` | |
+| `rename` | `path`, `to` | |
+| `delete` | `paths` | recursive, permanent |
+| `copy` / `move` | `paths`, `dir` | names that exist get ` (n)` appended |
+| `thumb` | `path`, `px` | body: JPEG preview of an image or video |
+| `pull` | `path` | see below |
+
+**Pull** (phone → PC): the reply is `{"t":"fs.res","rid","ok":true,"size","name"}` followed by `chunk`s
+and an `end` with the same id as `rid` (as in §4). Either side stops it with `file.cancel`; the
+phone confirms a PC's cancel with its own `file.cancel`.
+
+**Push** (PC → phone): a `file.offer` with `dir` set. The phone accepts it whatever its
+自动接收文件 setting is (the user chose the folder on the PC) and stores it there under a free name.

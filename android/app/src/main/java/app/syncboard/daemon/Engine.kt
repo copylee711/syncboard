@@ -48,6 +48,22 @@ class Engine(
 ) {
     private val io = Executors.newCachedThreadPool()
     private val timer = Executors.newSingleThreadScheduledExecutor()
+    @Volatile private var trim: java.util.concurrent.ScheduledFuture<*>? = null
+
+    /**
+     * Gives memory back once a burst of work (transfers, image conversions) is over: chunk
+     * buffers are garbage the GC only frees, and the heap stays grown until it is trimmed.
+     */
+    fun trimSoon() {
+        trim?.cancel(false)
+        trim = timer.schedule({
+            System.gc()
+            runCatching {
+                val vm = Class.forName("dalvik.system.VMRuntime")
+                vm.getMethod("trimHeap").invoke(vm.getMethod("getRuntime").invoke(null))
+            }
+        }, 5, TimeUnit.SECONDS)
+    }
     private val sessions = ConcurrentHashMap<String, Session>()
     private val loops = ConcurrentHashMap<String, ConnLoop>()
     private val waiters = ConcurrentHashMap<String, Waiter>()
@@ -65,6 +81,7 @@ class Engine(
         if (known != null) bridge.setMediaImage(known.first, known.second) else bridge.setImage(png)
         val n = pushImage(png)
         Log.i(TAG, "new image copied (${png.size} bytes, $n PC(s))")
+        trimSoon()
     }
 
     private fun applyMediaSettings() = with(config.settings) {
@@ -438,7 +455,8 @@ class Engine(
             val buf = java.io.ByteArrayOutputStream(size)
         }
 
-        class FileIn(val file: File, val name: String, val size: Long) : Inbound() {
+        /** [quiet]: put in a folder the PC's file manager chose; the PC shows the progress. */
+        class FileIn(val file: File, val name: String, val size: Long, val quiet: Boolean = false) : Inbound() {
             val md: MessageDigest = MessageDigest.getInstance("SHA-256")
             val out = FileOutputStream(file)
             var done = 0L
@@ -493,9 +511,22 @@ class Engine(
                     val size = m.header.optLong("size")
                     if (remember(id) && size <= MAX_IMAGE) inbound[id] = Inbound.Image(size.toInt())
                 }
+                "fs" -> onFs(m)
                 "file.offer" -> {
                     val name = sanitize(m.str("name"))
                     val size = m.header.optLong("size")
+                    // From the PC's file manager, into a folder the user picked there.
+                    if (m.header.has("dir")) {
+                        try {
+                            val dir = FileOps.checked(m.str("dir"))
+                            if (!dir.isDirectory) throw IOException("no such folder")
+                            inbound[id] = Inbound.FileIn(uniqueFile(dir, name), name, size, quiet = true)
+                            send(Message.of("t" to "file.accept", "id" to id))
+                        } catch (e: IOException) {
+                            send(Message.of("t" to "file.reject", "id" to id))
+                        }
+                        return
+                    }
                     if (!config.settings.autoAcceptFiles) {
                         send(Message.of("t" to "file.reject", "id" to id))
                         return
@@ -521,7 +552,7 @@ class Engine(
                         ib.out.write(m.body)
                         val before = ib.done * 50 / maxOf(ib.size, 1)
                         ib.done += m.body.size
-                        if (ib.done * 50 / maxOf(ib.size, 1) != before) emitFile("fileProgress", id, ib.name, ib.done, ib.size, true)
+                        if (!ib.quiet && ib.done * 50 / maxOf(ib.size, 1) != before) emitFile("fileProgress", id, ib.name, ib.done, ib.size, true)
                     }
                     null -> {}
                 }
@@ -531,8 +562,9 @@ class Engine(
                         is Inbound.Image -> if (ib.md.digest().toHex() == want) applyRemote(Clip.Image(ib.buf.toByteArray()))
                         is Inbound.FileIn -> {
                             ib.out.close()
+                            trimSoon()
                             if (ib.md.digest().toHex() == want) {
-                                emit(JSONObject().put("event", "fileDone").put("id", id).put("name", ib.name)
+                                if (!ib.quiet) emit(JSONObject().put("event", "fileDone").put("id", id).put("name", ib.name)
                                     .put("path", ib.file.path).put("incoming", true))
                             } else {
                                 ib.file.delete()
@@ -542,10 +574,13 @@ class Engine(
                         null -> {}
                     }
                 }
-                "file.cancel" -> (inbound.remove(id) as? Inbound.FileIn)?.let {
-                    it.out.close()
-                    it.file.delete()
-                    emitFailed(id, it.name, "对方已取消")
+                "file.cancel" -> {
+                    (inbound.remove(id) as? Inbound.FileIn)?.let {
+                        it.out.close()
+                        it.file.delete()
+                        if (!it.quiet) emitFailed(id, it.name, "对方已取消")
+                    }
+                    if (id in pulling) cancelled += id
                 }
                 "file.accept", "file.reject" -> waiters[id]?.let {
                     it.accepted = m.kind == "file.accept"
@@ -555,7 +590,64 @@ class Engine(
         }
 
         fun send(m: Message) = io.execute { runCatching { writer.write(m) }.onFailure { close() } }
+
+        /** A file-manager request from the PC (protocol §8). */
+        private fun onFs(m: Message) {
+            val rid = m.str("rid")
+            if (m.str("op") == "pull") {
+                io.execute { pull(rid, m.str("path")) }
+                return
+            }
+            fsPool.execute {
+                val reply = try {
+                    FileOps.run(m.header).let { r -> Message(r.header.put("t", "fs.res").put("rid", rid), r.body) }
+                } catch (e: Exception) {
+                    if (e !is FileOps.OpError) Log.w(TAG, "fs ${m.str("op")} failed", e)
+                    Message.of("t" to "fs.res", "rid" to rid, "ok" to false, "error" to (e.message ?: e.toString()))
+                }
+                runCatching { writer.write(reply) }.onFailure { close() }
+            }
+        }
+
+        /** Streams a phone file to the PC: `fs.res` with its size, then `chunk`s and `end` under the same id. */
+        private fun pull(id: String, path: String) {
+            pulling += id
+            try {
+                val f = FileOps.checked(path)
+                if (!f.isFile) throw FileOps.OpError("文件不存在")
+                val size = f.length()
+                writer.write(Message.of("t" to "fs.res", "rid" to id, "ok" to true, "size" to size, "name" to f.name))
+                val md = MessageDigest.getInstance("SHA-256")
+                val buf = ByteArray(CHUNK_SIZE)
+                var seq = 0
+                f.inputStream().use { input ->
+                    while (true) {
+                        if (id in cancelled) {
+                            writer.write(Message.of("t" to "file.cancel", "id" to id))
+                            return
+                        }
+                        val n = input.read(buf)
+                        if (n < 0) break
+                        if (n == 0) continue
+                        md.update(buf, 0, n)
+                        writer.write(Message.of("t" to "chunk", "id" to id, "seq" to seq++, body = buf.copyOf(n)))
+                    }
+                }
+                writer.write(Message.of("t" to "end", "id" to id, "sha256" to md.digest().toHex()))
+            } catch (e: Exception) {
+                runCatching { writer.write(Message.of("t" to "fs.res", "rid" to id, "ok" to false, "error" to (e.message ?: e.toString()))) }
+            } finally {
+                pulling -= id
+                trimSoon()
+                cancelled -= id
+            }
+        }
     }
+
+    /** File-manager ops other than transfers; a few at a time (thumbnails decode images). */
+    private val fsPool = Executors.newFixedThreadPool(3)
+    private val pulling: MutableSet<String> = ConcurrentHashMap.newKeySet()
+    private val cancelled: MutableSet<String> = ConcurrentHashMap.newKeySet()
 
     // ---- files ----
 
@@ -590,6 +682,7 @@ class Engine(
             }
             s.writer.write(Message.of("t" to "end", "id" to id, "sha256" to md.digest().toHex()))
             emit(JSONObject().put("event", "fileDone").put("id", id).put("name", name).put("incoming", false))
+            trimSoon()
             return true
         } catch (e: Exception) {
             runCatching { s.writer.write(Message.of("t" to "file.cancel", "id" to id)) }

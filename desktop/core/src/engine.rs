@@ -89,6 +89,22 @@ struct Outbound {
     size: u64,
 }
 
+/// A phone file the file manager asked for (protocol §8 `pull`), saved to `dest`.
+struct Pull {
+    peer: String,
+    dest: PathBuf,
+    name: String,
+}
+
+/// Result of a transfer started by the file manager: where a pulled file landed.
+pub type TransferResult = std::result::Result<Option<PathBuf>, String>;
+
+/// A reply to a file-manager request: its header and body.
+pub struct FsReply {
+    pub header: Value,
+    pub body: Vec<u8>,
+}
+
 pub struct Engine {
     store: Mutex<Store>,
     events: mpsc::UnboundedSender<Event>,
@@ -99,6 +115,13 @@ pub struct Engine {
     outbound: Mutex<HashMap<String, Outbound>>,
     /// Peers whose last handshake failed with a key mismatch.
     key_mismatch: Mutex<HashSet<String>>,
+    /// File-manager requests waiting for `fs.res`, by request id.
+    fs_waiting: Mutex<HashMap<String, oneshot::Sender<FsReply>>>,
+    pulls: Mutex<HashMap<String, Pull>>,
+    /// Transfers the file manager's queue awaits, by transfer id.
+    done_waiting: Mutex<HashMap<String, oneshot::Sender<TransferResult>>>,
+    /// Transfers the user cancelled; checked while streaming either way.
+    cancelled: Mutex<HashSet<String>>,
     next: AtomicU64,
     port: u16,
 }
@@ -121,6 +144,10 @@ impl Engine {
             pending_pairs: Mutex::new(HashMap::new()),
             outbound: Mutex::new(HashMap::new()),
             key_mismatch: Mutex::new(HashSet::new()),
+            fs_waiting: Mutex::new(HashMap::new()),
+            pulls: Mutex::new(HashMap::new()),
+            done_waiting: Mutex::new(HashMap::new()),
+            cancelled: Mutex::new(HashSet::new()),
             next: AtomicU64::new(1),
             port,
         });
@@ -274,6 +301,87 @@ impl Engine {
 
     /// Offers a file to a connected peer; streaming starts once the peer accepts.
     pub async fn send_file(self: &Arc<Self>, peer: &str, path: &Path) -> Result<String> {
+        self.offer_file(peer, path, None).await
+    }
+
+    /// Sends a file into the phone folder `dir` (protocol §8); the receiver resolves when it is done.
+    pub async fn push_file(self: &Arc<Self>, peer: &str, path: &Path, dir: &str) -> (String, oneshot::Receiver<TransferResult>) {
+        let (tx, rx) = oneshot::channel();
+        match self.offer_file(peer, path, Some(dir)).await {
+            Ok(id) => {
+                self.done_waiting.lock().unwrap().insert(id.clone(), tx);
+                (id, rx)
+            }
+            Err(e) => {
+                let _ = tx.send(Err(e.to_string()));
+                (String::new(), rx)
+            }
+        }
+    }
+
+    /// Fetches the phone file `path` into `dest`; the receiver resolves when it is done.
+    pub async fn pull_file(&self, peer: &str, path: &str, dest: &Path) -> (String, oneshot::Receiver<TransferResult>) {
+        let (tx, rx) = oneshot::channel();
+        let id = crypto::random_id();
+        let Some(stx) = self.session_tx(peer) else {
+            let _ = tx.send(Err("手机未连接".into()));
+            return (id, rx);
+        };
+        let name = path.rsplit('/').next().unwrap_or(path).to_string();
+        self.pulls.lock().unwrap().insert(id.clone(), Pull { peer: peer.into(), dest: dest.to_path_buf(), name });
+        self.done_waiting.lock().unwrap().insert(id.clone(), tx);
+        if stx.send(Message::new(json!({"t":"fs","rid":id,"op":"pull","path":path}))).await.is_err() {
+            self.pulls.lock().unwrap().remove(&id);
+            self.finish(&id, Err("手机未连接".into()));
+        }
+        (id, rx)
+    }
+
+    /// Stops a transfer started with [`Self::push_file`] or [`Self::pull_file`].
+    pub fn cancel_transfer(&self, id: &str) {
+        self.cancelled.lock().unwrap().insert(id.to_string());
+        let peer = self.outbound.lock().unwrap().remove(id).map(|o| o.peer);
+        let peer = peer.or_else(|| self.pulls.lock().unwrap().remove(id).map(|p| p.peer));
+        let peer = peer.or_else(|| self.connected().first().map(|c| c.0.clone()));
+        if let Some(tx) = peer.and_then(|p| self.session_tx(&p)) {
+            let _ = tx.try_send(Message::new(json!({"t":"file.cancel","id":id})));
+        }
+        self.finish(id, Err("已取消".into()));
+    }
+
+    fn finish(&self, id: &str, r: TransferResult) {
+        if let Some(tx) = self.done_waiting.lock().unwrap().remove(id) {
+            let _ = tx.send(r);
+        }
+    }
+
+    /// A file-manager request to a phone (protocol §8): `op` with `args` merged into the header.
+    pub async fn fs(&self, peer: &str, op: &str, mut args: Value, timeout: Duration) -> Result<FsReply> {
+        let tx = self.session_tx(peer).ok_or_else(|| anyhow!("手机未连接"))?;
+        let rid = crypto::random_id();
+        if !args.is_object() {
+            args = json!({});
+        }
+        args["t"] = json!("fs");
+        args["rid"] = json!(rid);
+        args["op"] = json!(op);
+        let (wtx, wrx) = oneshot::channel();
+        self.fs_waiting.lock().unwrap().insert(rid.clone(), wtx);
+        if tx.send(Message::new(args)).await.is_err() {
+            self.fs_waiting.lock().unwrap().remove(&rid);
+            bail!("手机未连接");
+        }
+        let r = tokio::time::timeout(timeout, wrx).await;
+        self.fs_waiting.lock().unwrap().remove(&rid);
+        match r {
+            Ok(Ok(reply)) if reply.header.get("ok").and_then(Value::as_bool) == Some(true) => Ok(reply),
+            Ok(Ok(reply)) => bail!("{}", reply.header.get("error").and_then(Value::as_str).unwrap_or("手机端操作失败")),
+            Ok(Err(_)) => bail!("连接断开"),
+            Err(_) => bail!("手机没有响应（手机 App 可能需要更新）"),
+        }
+    }
+
+    async fn offer_file(self: &Arc<Self>, peer: &str, path: &Path, dir: Option<&str>) -> Result<String> {
         let meta = tokio::fs::metadata(path).await?;
         if !meta.is_file() {
             bail!("not a file");
@@ -285,7 +393,11 @@ impl Engine {
             id.clone(),
             Outbound { peer: peer.to_string(), path: path.to_path_buf(), name: name.clone(), size: meta.len() },
         );
-        tx.send(Message::new(json!({"t":"file.offer","id":id,"name":name,"size":meta.len()})))
+        let mut offer = json!({"t":"file.offer","id":id,"name":name,"size":meta.len()});
+        if let Some(d) = dir {
+            offer["dir"] = json!(d);
+        }
+        tx.send(Message::new(offer))
             .await
             .map_err(|_| anyhow!("peer disconnected"))?;
         Ok(id)
@@ -296,6 +408,11 @@ impl Engine {
     }
 
     fn emit(&self, e: Event) {
+        match &e {
+            Event::FileDone { id, path, .. } => self.finish(id, Ok(path.as_ref().map(PathBuf::from))),
+            Event::FileFailed { id, reason, .. } => self.finish(id, Err(reason.clone())),
+            _ => {}
+        }
         let _ = self.events.send(e);
     }
 
@@ -584,6 +701,42 @@ impl Engine {
                     }
                 }
             }
+            "fs.res" => {
+                let rid = m.str("rid").unwrap_or_default().to_string();
+                let pull = self.pulls.lock().unwrap().remove(&rid);
+                if let Some(p) = pull {
+                    // A pull starts with fs.res (size, or an error), then chunks under the same id.
+                    if m.header.get("ok").and_then(Value::as_bool) != Some(true) || p.peer != peer {
+                        let reason = m.str("error").unwrap_or("手机端读取失败").to_string();
+                        self.emit(Event::FileFailed { id: rid, name: p.name, reason });
+                    } else {
+                        let size = m.u64("size").unwrap_or(0);
+                        if let Some(parent) = p.dest.parent() {
+                            let _ = tokio::fs::create_dir_all(parent).await;
+                        }
+                        match tokio::fs::File::create(&p.dest).await {
+                            Ok(file) => {
+                                inbound.insert(rid, Inbound::File { hasher: Sha256::new(), file, path: p.dest, name: p.name, size, done: 0 });
+                            }
+                            Err(e) => {
+                                let _ = tx.send(Message::new(json!({"t":"file.cancel","id":rid}))).await;
+                                self.emit(Event::FileFailed { id: rid, name: p.name, reason: format!("无法写入：{e}") });
+                            }
+                        }
+                    }
+                } else {
+                    let w = self.fs_waiting.lock().unwrap().remove(&rid);
+                    if let Some(w) = w {
+                        let _ = w.send(FsReply { header: m.header.clone(), body: m.body.clone() });
+                    }
+                }
+            }
+            "chunk" if self.cancelled.lock().unwrap().contains(&id) => {
+                if let Some(Inbound::File { path, file, .. }) = inbound.remove(&id) {
+                    drop(file);
+                    let _ = tokio::fs::remove_file(&path).await;
+                }
+            }
             "chunk" => match inbound.get_mut(&id) {
                 Some(Inbound::Image { hasher, buf, size }) => {
                     hasher.update(&m.body);
@@ -627,10 +780,14 @@ impl Engine {
                 }
             }
             "file.cancel" => {
+                // Also the phone confirming a pull we cancelled.
+                let ours = self.cancelled.lock().unwrap().remove(&id);
                 if let Some(Inbound::File { path, name, file, .. }) = inbound.remove(&id) {
                     drop(file);
                     let _ = tokio::fs::remove_file(&path).await;
-                    self.emit(Event::FileFailed { id, name, reason: "对方已取消".into() });
+                    if !ours {
+                        self.emit(Event::FileFailed { id, name, reason: "对方已取消".into() });
+                    }
                 }
             }
             "file.accept" => {
@@ -661,6 +818,10 @@ impl Engine {
             let mut buf = vec![0u8; CHUNK_SIZE];
             let (mut done, mut seq) = (0u64, 0u64);
             loop {
+                if self.cancelled.lock().unwrap().remove(&id) {
+                    let _ = tx.send(Message::new(json!({"t":"file.cancel","id":id}))).await;
+                    bail!("已取消");
+                }
                 let n = f.read(&mut buf).await?;
                 if n == 0 {
                     break;

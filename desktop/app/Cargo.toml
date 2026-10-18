@@ -18,8 +18,9 @@ tokio = { version = "1", features = ["rt-multi-thread", "sync", "time", "process
 qrcode = { version = "0.14", default-features = false, features = ["svg"] }
 winreg = "0.55"
 miniz_oxide = "0.8"
-windows = { version = "0.61", features = ["Foundation", "Networking_Connectivity", "Networking_NetworkOperators"] }
-windows-sys = { version = "0.59", features = ["Win32_System_Threading", "Win32_System_ProcessStatus", "Win32_System_Diagnostics_ToolHelp", "Win32_Foundation"] }
+base64 = "0.22"
+windows ={ version = "0.61", features = ["Foundation", "Networking_Connectivity", "Networking_NetworkOperators"] }
+windows-sys = { version = "0.59", features = ["Win32_System_Threading", "Win32_System_ProcessStatus", "Win32_System_Diagnostics_ToolHelp", "Win32_Foundation", "Win32_UI_Shell", "Win32_System_Com"] }
 
 [features]
 default = ["custom-protocol"]
