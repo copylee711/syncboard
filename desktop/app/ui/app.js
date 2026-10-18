@@ -70,6 +70,8 @@ function render() {
     $("statusSub").textContent = "点「添加手机」，用手机上的 SyncBoard 扫码";
   }
   $("sendBtn").disabled = online.length === 0;
+  // The panel controls the phone picked in the device list (the first online one by default).
+  renderPhone(panelTarget());
 
   const peers = $("peers");
   if (!s.peers.length) {
@@ -77,7 +79,7 @@ function render() {
   } else {
     peers.innerHTML = s.peers
       .map(
-        (p) => `<div class="item">
+        (p) => `<div class="item${p.connected && online.length > 1 ? " pickable" : ""}${p.id === phoneStatus?.id && online.length > 1 ? " picked" : ""}" data-pick="${esc(p.id)}">
           <div class="meta">
             <div class="name">${esc(p.name)}</div>
             <div class="sub"><span class="dot ${p.connected ? "on" : ""}"></span>${p.connected ? "在线" : p.keyMismatch ? "配对信息不一致，请取消配对后重新扫码" : "离线"}${p.addr && !(p.keyMismatch && !p.connected) ? " · " + esc(p.addr) : ""}</div>
@@ -393,3 +395,148 @@ setTimeout(() => {
     }
   }).catch(() => {});
 }, 3000);
+
+// ---------- phone panel (status and controls) ----------
+
+let phoneStatus = null; // { id, ... } of the phone the panel shows
+let panelPeer = null;
+function panelTarget() {
+  const online = (state?.peers || []).filter((p) => p.connected);
+  return online.find((p) => p.id === panelPeer) || online[0];
+}
+$("peers").addEventListener("click", (e) => {
+  const it = e.target.closest("[data-pick]");
+  if (!it || e.target.closest("button") || !it.classList.contains("pickable")) return;
+  panelPeer = it.dataset.pick;
+  render();
+});
+let statusTimer = null;
+let ringing = false;
+
+function renderPhone(p) {
+  $("phonePanel").hidden = !p;
+  if (!p) {
+    phoneStatus = null;
+    return;
+  }
+  if (phoneStatus?.id !== p.id) {
+    phoneStatus = { id: p.id };
+    refreshPhoneStatus();
+  }
+  const st = phoneStatus;
+  const parts = [];
+  if (st.battery != null) {
+    const cls = st.charging || st.full ? "charging" : st.battery <= 15 ? "low" : "";
+    parts.push(`<span><span class="battery ${cls}"><i style="width:${st.battery}%"></i></span>${st.battery}%${st.full ? " · 已充满" : st.charging ? " · 充电中" : ""}</span>`);
+  }
+  if (st.storageTotal) parts.push(`<span>存储可用 ${fmtSize(st.storageFree)} / ${fmtSize(st.storageTotal)}</span>`);
+  if (st.model) parts.push(`<span>${esc(st.model)} · Android ${esc(st.android)}</span>`);
+  if (st.unsupported) parts.push(`<span>更新手机 App 后可在这里查看电量、控制手机</span>`);
+  $("phoneStats").innerHTML = parts.join("");
+  $("phonePanel").querySelectorAll(".ctl").forEach((b) => (b.disabled = !!st.unsupported));
+  $("ringBtn").classList.toggle("on", ringing);
+  $("ringBtn").querySelector("span").textContent = ringing ? "停止响铃" : "找手机";
+}
+
+async function refreshPhoneStatus() {
+  const id = phoneStatus?.id;
+  if (!id) return;
+  try {
+    const r = await invoke("phone_fs", { peer: id, op: "status", args: {} });
+    if (phoneStatus?.id === id) phoneStatus = { id, ...r };
+  } catch (e) {
+    // An older phone app doesn't answer.
+    if (phoneStatus?.id === id) phoneStatus = { id, unsupported: /更新/.test(String(e)) };
+  }
+  if (state) renderPhone(panelTarget());
+}
+
+function phoneCmd(op, args) {
+  if (!phoneStatus?.id) return Promise.reject();
+  return call("phone_fs", { peer: phoneStatus.id, op, args });
+}
+
+$("phonePanel").addEventListener("click", async (e) => {
+  const b = e.target.closest("[data-ctl]");
+  if (!b) return;
+  const a = b.dataset.ctl;
+  if (a === "ring") {
+    const stop = ringing;
+    ringing = !ringing;
+    renderPhone(panelTarget());
+    await phoneCmd("ring", { stop }).catch(() => (ringing = false));
+    if (ringing) {
+      toast("手机正在响铃，找到后可在手机上按音量键或在这里停止");
+      clearTimeout(b._t);
+      b._t = setTimeout(() => {
+        ringing = false;
+        renderPhone(panelTarget());
+      }, 60000);
+    }
+    return;
+  }
+  if (a === "link") {
+    const last = (await invoke("clip_history").catch(() => [])).find((h) => /^https?:\/\//.test(h.text.trim()));
+    $("linkInput").value = last ? last.text.trim() : "";
+    $("linkSheet").hidden = false;
+    setTimeout(() => $("linkInput").select());
+    return;
+  }
+  phoneCmd("media", { action: a }).catch(() => {});
+});
+
+$("linkForm").onsubmit = async (e) => {
+  e.preventDefault();
+  let url = $("linkInput").value.trim();
+  if (!url) return;
+  if (!/^https?:\/\//.test(url)) url = "https://" + url;
+  $("linkSheet").hidden = true;
+  await phoneCmd("open", { url }).then(() => toast("已在手机上打开")).catch(() => {});
+};
+$("linkCancel").onclick = () => ($("linkSheet").hidden = true);
+$("linkSheet").onclick = (e) => e.target.id === "linkSheet" && ($("linkSheet").hidden = true);
+
+// ---------- clipboard history ----------
+
+let historyAll = false;
+function fmtAgo(ms) {
+  const s = Math.max(0, (Date.now() - ms) / 1000);
+  if (s < 60) return "刚刚";
+  if (s < 3600) return `${Math.floor(s / 60)} 分钟前`;
+  if (s < 86400) return `${Math.floor(s / 3600)} 小时前`;
+  return new Date(ms).toLocaleDateString();
+}
+async function refreshHistory() {
+  const items = await invoke("clip_history").catch(() => []);
+  $("historySection").hidden = !items.length;
+  const shown = historyAll ? items : items.slice(0, 5);
+  $("history").innerHTML =
+    shown.map((h, i) => `<div class="h-item" data-i="${i}" title="点击复制"><div class="h-text">${esc(h.text)}</div><div class="h-meta">${h.from === "phone" ? "手机" : "电脑"}<br>${fmtAgo(h.at)}</div></div>`).join("") +
+    (items.length > 5 ? `<button class="h-more" id="historyMore">${historyAll ? "收起" : `显示全部 ${items.length} 条`}</button>` : "");
+  $("history").querySelectorAll(".h-item").forEach((el) => {
+    el.onclick = async () => {
+      await call("clip_recopy", { text: shown[+el.dataset.i].text });
+      toast("已复制到电脑和手机");
+      refreshHistory();
+    };
+  });
+  const more = $("historyMore");
+  if (more) more.onclick = () => ((historyAll = !historyAll), refreshHistory());
+}
+$("historyClear").onclick = async () => {
+  await call("clip_history_clear");
+  refreshHistory();
+};
+
+// Only while this window exists (it is destroyed in light mode): no background polling.
+function tick() {
+  if (document.visibilityState !== "visible") return;
+  refreshHistory();
+}
+setInterval(tick, 4000);
+statusTimer = setInterval(() => document.visibilityState === "visible" && refreshPhoneStatus(), 30000);
+window.addEventListener("focus", () => {
+  refreshHistory();
+  refreshPhoneStatus();
+});
+refreshHistory();

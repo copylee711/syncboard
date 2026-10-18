@@ -6,8 +6,22 @@ use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 use tokio::sync::mpsc::UnboundedReceiver;
 
+/// Recent clipboard texts, newest first, kept in memory only.
+const HISTORY: usize = 30;
+const HISTORY_CHARS: usize = 20_000;
+
+#[derive(Clone, serde::Serialize)]
+pub struct HistoryItem {
+    pub text: String,
+    /// "pc" or "phone".
+    pub from: &'static str,
+    /// Unix milliseconds.
+    pub at: u64,
+}
+
 pub struct ClipSync {
     engine: Arc<Engine>,
+    history: Mutex<std::collections::VecDeque<HistoryItem>>,
     writer: Mutex<Option<ClipboardWriter>>,
     /// Hash of the clipboard content both sides currently agree on.
     last: Mutex<String>,
@@ -40,6 +54,39 @@ impl ClipSync {
         }
     }
 
+    fn remember(&self, c: &ClipContent, from: &'static str) {
+        let ClipContent::Text(t) = c else { return };
+        if t.trim().is_empty() || t.chars().count() > HISTORY_CHARS {
+            return;
+        }
+        let at = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map(|d| d.as_millis() as u64).unwrap_or(0);
+        let mut h = self.history.lock().unwrap();
+        h.retain(|i| i.text != *t);
+        h.push_front(HistoryItem { text: t.clone(), from, at });
+        h.truncate(HISTORY);
+    }
+
+    pub fn history(&self) -> Vec<HistoryItem> {
+        self.history.lock().unwrap().iter().cloned().collect()
+    }
+
+    pub fn clear_history(&self) {
+        self.history.lock().unwrap().clear();
+    }
+
+    /// Puts a history entry back on this PC's clipboard, and the phone's.
+    pub fn recopy(&self, text: String) {
+        let c = ClipContent::Text(text);
+        *self.last.lock().unwrap() = c.hash();
+        if let Some(w) = self.writer.lock().unwrap().as_ref() {
+            w.write(c.clone());
+        }
+        self.remember(&c, "pc");
+        if self.allowed(&c) {
+            self.engine.send_clip(c);
+        }
+    }
+
     fn on_local(&self, c: ClipContent) {
         let h = c.hash();
         #[cfg(debug_assertions)]
@@ -51,6 +98,7 @@ impl ClipSync {
             }
             *last = h;
         }
+        self.remember(&c, "pc");
         if self.allowed(&c) {
             self.engine.send_clip(c);
         }
@@ -63,6 +111,7 @@ impl ClipSync {
             return;
         }
         *self.last.lock().unwrap() = c.hash();
+        self.remember(&c, "phone");
         if let Some(w) = self.writer.lock().unwrap().as_ref() {
             w.write(c);
         }
@@ -78,6 +127,7 @@ pub fn start(
     let sync = Arc::new(ClipSync {
         engine,
         writer: Mutex::new(None),
+        history: Mutex::new(Default::default()),
         last: Mutex::new(String::new()),
         paused_until: Mutex::new(None),
     });

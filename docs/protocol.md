@@ -208,3 +208,20 @@ phone confirms a PC's cancel with its own `file.cancel`.
 
 **Push** (PC → phone): a `file.offer` with `dir` set. The phone accepts it whatever its
 自动接收文件 setting is (the user chose the folder on the PC) and stores it there under a free name.
+
+## 9. Phone controls
+
+The same request format as §8, with these ops (no body):
+
+| `op` | args | reply |
+|---|---|---|
+| `status` | — | `model`, `android`, `battery` (0–100), `charging`, `full`, `temp` (°C), `storageTotal`, `storageFree` |
+| `ring` | `stop`? | starts (or stops) a loud tone on the alarm stream for up to 60 s, alarm volume restored after |
+| `media` | `action`: `playPause`, `next`, `previous`, `volumeUp`, `volumeDown`, `mute`, `lock` | volume actions reply `volume`, `max` (media stream) |
+| `open` | `url` (http/https) | opens it on the phone |
+
+Phone → PC, no reply:
+
+| `t` | fields | |
+|---|---|---|
+| `open.url` | `url` | open an http(s) link in the PC's browser (share sheet 在电脑上打开) |

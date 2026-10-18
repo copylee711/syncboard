@@ -291,6 +291,21 @@ async fn install_update(app: AppHandle, version: String) -> Result<(), String> {
 }
 
 #[tauri::command]
+fn clip_history(st: St) -> Value {
+    json!(st.sync.history())
+}
+
+#[tauri::command]
+fn clip_recopy(st: St, text: String) {
+    st.sync.recopy(text);
+}
+
+#[tauri::command]
+fn clip_history_clear(st: St) {
+    st.sync.clear_history();
+}
+
+#[tauri::command]
 fn unpair(st: St, id: String) -> Result<(), String> {
     st.engine.unpair(&id).map_err(|e| e.to_string())
 }
@@ -466,6 +481,7 @@ fn on_engine_event(app: &AppHandle, ev: Event) {
             }
             setup_event(app, "done", &format!("已与「{name}」配对"));
         }
+        Event::OpenUrl { url, .. } => system::open_url(url),
         Event::PairRequest { .. } => {
             st.pair_requests.lock().unwrap().push(v.clone());
             show_window(app);
@@ -638,7 +654,7 @@ fn main() {
             files::open_files, files::local_places, files::local_list, files::local_mkdir, files::local_rename,
             files::local_delete, files::local_open, files::local_reveal, files::local_paste, files::phone_fs,
             files::phone_list, files::phone_thumb, files::phone_open, files::queue_state, files::queue_add,
-            files::queue_cancel, files::queue_clear
+            files::queue_cancel, files::queue_clear, clip_history, clip_recopy, clip_history_clear
         ])
         .setup(move |app| {
             let handle = app.handle().clone();

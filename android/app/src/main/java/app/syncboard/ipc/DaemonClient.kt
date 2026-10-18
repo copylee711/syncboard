@@ -125,6 +125,25 @@ class DaemonClient(private val context: Context) {
          * Sends an image to the PCs' clipboards through the daemon. Blocking.
          * Returns null on success, or a reason to show the user.
          */
+        fun openOnPc(url: String): String? = try {
+            Socket().use { s ->
+                s.connect(InetSocketAddress("127.0.0.1", PORT), 1000)
+                s.soTimeout = 5_000
+                val o = DataOutputStream(BufferedOutputStream(s.getOutputStream()))
+                val i = DataInputStream(BufferedInputStream(s.getInputStream()))
+                writePlain(o, JSONObject().put("cmd", "openOnPc").put("url", url))
+                // The daemon greets first (hello, status), then answers.
+                var r: JSONObject
+                do r = readPlain(i) while (r.optString("event") != "openOnPc")
+                if (r.optInt("pcs") > 0) null else "电脑未连接"
+            }
+        } catch (e: java.net.ConnectException) {
+            "手机服务未运行，请打开 SyncBoard 启动"
+        } catch (e: Exception) {
+            android.util.Log.w("SyncBoard", "openOnPc failed", e)
+            "发送失败"
+        }
+
         fun pushImage(input: InputStream): String? {
             val bytes = try {
                 val out = java.io.ByteArrayOutputStream()

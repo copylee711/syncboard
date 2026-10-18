@@ -23,7 +23,7 @@ import java.util.concurrent.CopyOnWriteArrayList
  * 127.0.0.1:[PORT]. Callers are identified by the uid that owns their socket in
  * /proc/net/tcp*: only the SyncBoard app and shell/root may talk to the daemon.
  *
- * Requests: {"cmd": status|pairQr|pairCode|unpair|settings|discover|reconnect|wakeInfo|imageFolders|selfUpdate|stop, ...}
+ * Requests: {"cmd": status|pairQr|pairCode|unpair|settings|discover|reconnect|wakeInfo|imageFolders|openOnPc|selfUpdate|stop, ...}
  * Two connection types carry raw bytes after their first frame:
  *  - {"cmd":"sendFile",name,size,pc?} then `size` bytes, streamed to the PC;
  *  - {"cmd":"getClip",name} answered with {"size"} then the clipboard image bytes;
@@ -100,6 +100,8 @@ class IpcServer private constructor(private val server: ServerSocket, private va
             writePlain(out, JSONObject().put("event", "hello").put("version", VERSION)
                 .put("pid", Process.myPid()).put("uid", Process.myUid()))
             writePlain(out, engine.status())
+            // A one-shot client sends its command as the first frame.
+            if (hello.optString("cmd") !in setOf("", "hello", "status")) runCatching { handle(hello, out) }
             clients.add(out)
             try {
                 while (true) handle(readPlain(input), out)
@@ -130,6 +132,7 @@ class IpcServer private constructor(private val server: ServerSocket, private va
                 })
                 runCatching { writePlain(out, JSONObject().put("event", "imageFolders").put("folders", folders)) }
             }.start()
+            "openOnPc" -> writePlain(out, JSONObject().put("event", "openOnPc").put("pcs", engine.openOnPc(req.optString("url"))))
             "selfUpdate" -> SelfUpdate.start(req.getString("version"), Main.stateDir) { broadcast(it) }
             "stop" -> {
                 broadcast(JSONObject().put("event", "stopping"))

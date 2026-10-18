@@ -39,6 +39,19 @@
           文件管理
         </button>
       </div>
+      <div class="phone-panel" id="phonePanel" hidden>
+        <div class="phone-stats" id="phoneStats"></div>
+        <div class="phone-ctl">
+          <button class="ctl" data-ctl="ring" id="ringBtn" title="让手机响铃（静音时也会响）"><svg viewBox="0 0 24 24"><path d="M6 16V11a6 6 0 1112 0v5l1.5 2h-15zM10 20a2 2 0 004 0"/></svg><span>找手机</span></button>
+          <button class="ctl" data-ctl="previous" title="上一首"><svg viewBox="0 0 24 24"><path d="M7 6v12M18 6l-8 6 8 6z"/></svg></button>
+          <button class="ctl" data-ctl="playPause" title="播放 / 暂停"><svg viewBox="0 0 24 24"><path d="M7 5l7 7-7 7zM16 6v12M20 6v12"/></svg></button>
+          <button class="ctl" data-ctl="next" title="下一首"><svg viewBox="0 0 24 24"><path d="M17 6v12M6 6l8 6-8 6z"/></svg></button>
+          <button class="ctl" data-ctl="volumeDown" title="音量 −"><svg viewBox="0 0 24 24"><path d="M4 9v6h4l5 4V5L8 9zM16 12h5"/></svg></button>
+          <button class="ctl" data-ctl="volumeUp" title="音量 +"><svg viewBox="0 0 24 24"><path d="M4 9v6h4l5 4V5L8 9zM16 12h5M18.5 9.5v5"/></svg></button>
+          <button class="ctl" data-ctl="lock" title="锁定手机屏幕"><svg viewBox="0 0 24 24"><rect x="5" y="11" width="14" height="10" rx="2"/><path d="M8 11V8a4 4 0 018 0v3"/></svg></button>
+          <button class="ctl" data-ctl="link" title="在手机上打开链接"><svg viewBox="0 0 24 24"><path d="M10 14a4 4 0 005.7 0l3-3a4 4 0 00-5.7-5.7l-1 1M14 10a4 4 0 00-5.7 0l-3 3a4 4 0 005.7 5.7l1-1"/></svg></button>
+        </div>
+      </div>
     </section>
 
     <section>
@@ -52,6 +65,12 @@
     <section id="transfersSection" hidden>
       <div class="section-head"><h2>传输</h2></div>
       <div id="transfers" class="group"></div>
+    </section>
+
+    <section id="historySection" hidden>
+      <div class="section-head"><h2>剪贴板历史</h2><button class="link" id="historyClear">清空</button></div>
+      <div id="history" class="group"></div>
+      <p class="fine">只保存在内存里，退出 SyncBoard 即清空。点一条可再次复制到电脑和手机。</p>
     </section>
 
     <section>
@@ -160,6 +179,17 @@
         <button class="btn ink" id="acceptBtn">接受</button>
       </div>
     </div>
+  </div>
+
+  <div class="sheet-backdrop" id="linkSheet" hidden>
+    <form class="sheet" id="linkForm">
+      <h3>在手机上打开链接</h3>
+      <input class="field" id="linkInput" placeholder="https://" spellcheck="false" autocomplete="off" />
+      <div class="sheet-actions">
+        <button type="button" class="btn" id="linkCancel">取消</button>
+        <button type="submit" class="btn ink">打开</button>
+      </div>
+    </form>
   </div>
 
   <div class="drop" id="drop" hidden><div>松开即可发送到手机</div></div>

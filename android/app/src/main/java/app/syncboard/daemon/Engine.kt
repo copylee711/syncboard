@@ -161,6 +161,13 @@ class Engine(
         pushStatus()
     }
 
+    /** Opens an http(s) link on the PCs (share sheet 在电脑上打开). Returns how many got it. */
+    fun openOnPc(url: String): Int {
+        val n = sessions.size
+        broadcast { it.writer.write(Message.of("t" to "open.url", "url" to url)) }
+        return n
+    }
+
     /** Re-try connections now (e.g. the UI was opened or the network changed). */
     fun reconnect() = loops.values.forEach { it.wake() }
 
@@ -600,7 +607,11 @@ class Engine(
             }
             fsPool.execute {
                 val reply = try {
-                    FileOps.run(m.header).let { r -> Message(r.header.put("t", "fs.res").put("rid", rid), r.body) }
+                    if (DeviceOps.handles(m.str("op"))) {
+                        Message(DeviceOps.run(m.header, ShellContext.init()).put("t", "fs.res").put("rid", rid))
+                    } else {
+                        FileOps.run(m.header).let { r -> Message(r.header.put("t", "fs.res").put("rid", rid), r.body) }
+                    }
                 } catch (e: Exception) {
                     if (e !is FileOps.OpError) Log.w(TAG, "fs ${m.str("op")} failed", e)
                     Message.of("t" to "fs.res", "rid" to rid, "ok" to false, "error" to (e.message ?: e.toString()))

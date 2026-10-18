@@ -242,7 +242,7 @@ pub async fn phone_fs(app: AppHandle, peer: String, op: String, args: Value) -> 
     let timeout = match op.as_str() {
         "copy" | "move" | "delete" => FS_LONG_TIMEOUT,
         // The first request: an older phone app never answers, so don't keep the user waiting.
-        "roots" => Duration::from_secs(6),
+        "roots" | "status" => Duration::from_secs(6),
         _ => FS_TIMEOUT,
     };
     let r = engine(&app).fs(&peer, &op, args, timeout).await.map_err(|e| e.to_string())?;

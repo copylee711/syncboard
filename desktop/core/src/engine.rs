@@ -68,6 +68,8 @@ pub enum Event {
     /// port, for networks where mDNS doesn't reach the PC (protocol §7). `name` is the
     /// pairing service name from the QR, so the app can tell whether it is the one it shows.
     AdbPairHint { name: String, ip: String, pair_port: u16, connect_port: Option<u16> },
+    /// The phone shared a link with 在电脑上打开 (protocol §9).
+    OpenUrl { from: String, url: String },
 }
 
 struct Session {
@@ -672,6 +674,12 @@ impl Engine {
                 self.unpair(peer)?;
                 self.emit(Event::PeerDisconnected { id: peer.into() });
                 bail!("peer unpaired");
+            }
+            "open.url" => {
+                let url = m.str("url").unwrap_or_default();
+                if (url.starts_with("https://") || url.starts_with("http://")) && url.len() < 8192 {
+                    self.emit(Event::OpenUrl { from: peer.into(), url: url.into() });
+                }
             }
             "clip.text" => {
                 if remember(seen, &id) && m.body.len() <= MAX_TEXT {

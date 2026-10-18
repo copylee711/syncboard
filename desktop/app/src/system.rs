@@ -80,7 +80,7 @@ pub fn open_path(p: &std::path::Path) {
 
 /// Opens an http(s) URL in the default browser.
 pub fn open_url(url: &str) {
-    if url.starts_with("https://") {
+    if url.starts_with("https://") || url.starts_with("http://") {
         let _ = Command::new("rundll32").args(["url.dll,FileProtocolHandler", url]).spawn();
     }
 }

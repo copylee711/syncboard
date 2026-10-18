@@ -69,6 +69,20 @@
         </activity>
 
         <activity
+            android:name=".ui.OpenOnPcActivity"
+            android:exported="true"
+            android:excludeFromRecents="true"
+            android:label="在电脑上打开"
+            android:noHistory="true"
+            android:theme="@android:style/Theme.Translucent.NoTitleBar">
+            <intent-filter>
+                <action android:name="android.intent.action.SEND" />
+                <category android:name="android.intent.category.DEFAULT" />
+                <data android:mimeType="text/plain" />
+            </intent-filter>
+        </activity>
+
+        <activity
             android:name=".ui.ShareClipActivity"
             android:exported="true"
             android:excludeFromRecents="true"
