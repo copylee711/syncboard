@@ -133,7 +133,7 @@ async function refresh() {
 
 // ---------- adding a phone ----------
 
-let tab = "app";
+let tab = "install";
 
 function setStatus(stage, text) {
   const el = $("setupStatus");
@@ -144,23 +144,30 @@ function setStatus(stage, text) {
 
 async function showTab(name) {
   tab = name;
-  document.querySelectorAll(".tabs button").forEach((b) => b.classList.toggle("on", b.dataset.tab === (name === "hotspot" ? "wifi" : name)));
+  document.querySelectorAll(".stepper li").forEach((li) => li.classList.toggle("on", li.dataset.step === (name === "install" ? "1" : "2")));
   document.querySelectorAll("[data-pane]").forEach((p) => (p.hidden = p.dataset.pane !== name));
   clearInterval(qrTimer);
   setStatus("", "");
   await invoke("setup_cancel");
   if (name === "wifi") {
     $("wifiQr").innerHTML = "";
-    const r = await call("setup_wifi");
-    $("wifiQr").innerHTML = r.svg;
-    setStatus("", "等待手机扫码…");
+    const load = async () => {
+      const r = await call("setup_wifi");
+      $("wifiQr").innerHTML = r.svg;
+      setStatus("", "等待手机扫码…");
+    };
+    await load();
+    // The QR carries a pairing token that expires after 5 minutes.
+    // Not while a phone is mid-pairing: a new QR restarts the flow.
+    qrTimer = setInterval(() => tab === "wifi" && !$("setupStatus").classList.contains("progress") && load(), 4 * 60 * 1000);
   } else if (name === "usb") {
     await call("setup_usb");
-  } else if (name === "app") {
-    const load = async () => ($("qr").innerHTML = (await call("pairing_qr")).svg);
-    load();
-    if (!$("apkQr").innerHTML) call("apk_qr").then((r) => ($("apkQr").innerHTML = r.svg));
-    qrTimer = setInterval(load, 4 * 60 * 1000); // tokens expire after 5 minutes
+  } else if (name === "install") {
+    if (!$("apkQr").innerHTML) {
+      const r = await call("apk_qr");
+      $("apkQr").innerHTML = r.svg;
+      $("apkName").textContent = $("apkName2").textContent = r.apk;
+    }
   } else if (name === "hotspot") {
     $("hotspotQr").innerHTML = "";
     try {
@@ -175,8 +182,8 @@ async function showTab(name) {
 
 function openPair() {
   $("pairSheet").hidden = false;
-  // The phone app guides the user to the right Settings switches, so start there.
-  showTab("app");
+  // One linear path: install the app, then scan the wireless debugging code.
+  showTab("install");
 }
 
 function closePair() {
@@ -187,9 +194,8 @@ function closePair() {
   invoke("hotspot_stop");
 }
 
-document.querySelectorAll(".tabs button").forEach((b) => (b.onclick = () => showTab(b.dataset.tab)));
-$("hotspotBtn").onclick = () => showTab("hotspot");
-$("hotspotNext").onclick = () => showTab("wifi");
+document.querySelectorAll("[data-go]").forEach((b) => (b.onclick = () => showTab(b.dataset.go)));
+$("toConnect").onclick = () => showTab("wifi");
 
 listen("setup", (e) => {
   const { stage, text } = e.payload;

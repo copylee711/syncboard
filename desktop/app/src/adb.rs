@@ -130,102 +130,23 @@ pub fn devices(adb: &Path) -> Vec<String> {
 
 // ---------- device setup ----------
 
-/// Release builds download the phone APK matching this version from GitHub Releases.
-/// Local builds may embed it instead (see build.rs) so they can be tested offline.
-const RELEASE_BASE: &str = "https://github.com/copylee711/syncboard/releases/download";
-const VERSION: &str = env!("CARGO_PKG_VERSION");
-
-#[cfg(embedded_apk)]
-static APK: &[u8] = include_bytes!(concat!(env!("OUT_DIR"), "/app.apk"));
-#[cfg(embedded_apk)]
-const APK_VERSION: &str = include_str!(concat!(env!("OUT_DIR"), "/apk_version.txt"));
-
 fn dumpsys_field(adb: &Path, serial: &str, field: &str) -> Option<String> {
     let out = shell(adb, serial, &format!("dumpsys package {PACKAGE} | grep {field}=")).ok()?;
     Some(out.split(&format!("{field}=")).nth(1)?.split_whitespace().next()?.to_string())
 }
 
-/// Returns a local APK path to install, or None if the phone is already up to date.
-fn apk_to_install(adb: &Path, serial: &str, progress: &dyn Fn(&str)) -> Result<Option<PathBuf>, String> {
-    #[cfg(embedded_apk)]
-    {
-        let _ = progress;
-        let bundled: u32 = APK_VERSION.trim().parse().unwrap_or(1);
-        let installed = dumpsys_field(adb, serial, "versionCode").and_then(|v| v.parse::<u32>().ok());
-        if installed.is_some_and(|v| v >= bundled) {
-            return Ok(None);
-        }
-        let tmp = std::env::temp_dir().join("syncboard-phone.apk");
-        std::fs::write(&tmp, APK).map_err(|e| e.to_string())?;
-        Ok(Some(tmp))
-    }
-    #[cfg(not(embedded_apk))]
-    {
-        let installed = dumpsys_field(adb, serial, "versionName");
-        if installed.as_deref().is_some_and(|v| crate::update::version_tuple(v) >= crate::update::version_tuple(VERSION)) {
-            return Ok(None);
-        }
-        let dir = PathBuf::from(std::env::var_os("LOCALAPPDATA").ok_or("no LOCALAPPDATA")?).join("SyncBoard");
-        let apk = dir.join(format!("SyncBoard-{VERSION}.apk"));
-        if !apk.is_file() {
-            progress("正在下载手机端 SyncBoard…");
-            let _ = std::fs::create_dir_all(&dir);
-            let url = format!("{RELEASE_BASE}/v{VERSION}/SyncBoard-{VERSION}.apk");
-            let part = apk.with_extension("part");
-            // curl.exe ships with Windows 10 1803+.
-            let ok = Command::new("curl.exe")
-                .args(["-fL", "--retry", "2", "--connect-timeout", "15", "-o"])
-                .arg(&part)
-                .arg(&url)
-                .creation_flags(CREATE_NO_WINDOW)
-                .status()
-                .is_ok_and(|s| s.success());
-            if !ok || std::fs::rename(&part, &apk).is_err() {
-                let _ = std::fs::remove_file(&part);
-                return Err(if installed.is_some() {
-                    "无法下载新版手机端，已跳过更新".into()
-                } else {
-                    format!("无法下载手机端 App（{url}）。请先在手机上安装 SyncBoard，再重试。")
-                });
-            }
-        }
-        Ok(Some(apk))
+/// The user installs the app themselves (step 1 of 添加手机); adb only starts it.
+fn require_app(adb: &Path, serial: &str) -> Result<(), String> {
+    match dumpsys_field(adb, serial, "versionName") {
+        Some(_) => Ok(()),
+        None => Err("手机上还没有安装 SyncBoard。请回到第 1 步扫码安装，再重试。".into()),
     }
 }
 
-/// Installs or upgrades the phone app when needed.
-fn ensure_app(adb: &Path, serial: &str, progress: &dyn Fn(&str)) -> Result<(), String> {
-    let apk = match apk_to_install(adb, serial, progress) {
-        Ok(Some(apk)) => apk,
-        Ok(None) => return Ok(()),
-        // An older app that is already installed still works; don't block on updates.
-        Err(e) if dumpsys_field(adb, serial, "versionName").is_some() => {
-            progress(&e);
-            return Ok(());
-        }
-        Err(e) => return Err(e),
-    };
-    progress("正在安装手机端 SyncBoard…（如手机弹出确认，请点「允许」）");
-    match run(adb, &["-s", serial, "install", "-r", "-g", &apk.to_string_lossy()]) {
-        Ok(out) if out.contains("Success") => Ok(()),
-        Ok(out) | Err(out) => Err(install_error(&out)),
-    }
-}
-
-fn install_error(out: &str) -> String {
-    if out.contains("INSTALL_FAILED_USER_RESTRICTED") || out.contains("INSTALL_FAILED_ABORTED") {
-        "手机拒绝了安装。请在开发者选项里打开「USB 安装」，或在手机弹窗中点「允许」后重试。".into()
-    } else if out.contains("INSTALL_FAILED_UPDATE_INCOMPATIBLE") {
-        "手机上已有签名不同的 SyncBoard，请先卸载后重试。".into()
-    } else {
-        format!("安装失败：{}", out.lines().last().unwrap_or(out).trim())
-    }
-}
-
-/// Installs the app if needed, starts the daemon and asks it to pair with `pair_uri`.
+/// Starts the daemon on a phone that has the app and asks it to pair with `pair_uri`.
 /// Over USB, `adb reverse` lets the phone reach this PC even without a shared network.
 pub fn setup_device(adb: &Path, serial: &str, pair_uri: &str, usb: bool, progress: &dyn Fn(&str)) -> Result<(), String> {
-    ensure_app(adb, serial, progress)?;
+    require_app(adb, serial)?;
     progress("正在启动手机服务…");
     let mut uri = pair_uri.to_string();
     if usb && run(adb, &["-s", serial, "reverse", "tcp:53317", "tcp:53317"]).is_ok() {
@@ -254,9 +175,7 @@ pub fn start_all(adb: &Path) -> Result<String, String> {
 }
 
 pub fn start_daemon(adb: &Path, serial: &str) -> Result<(), String> {
-    if dumpsys_field(adb, serial, "versionName").is_none() {
-        return Err("手机上还没有安装 SyncBoard".into());
-    }
+    require_app(adb, serial)?;
     // Re-grant in case the app was reinstalled since setup: it lets the app switch
     // developer options and wireless debugging on by itself.
     let _ = shell(adb, serial, &format!("pm grant {PACKAGE} android.permission.WRITE_SECURE_SETTINGS"));
@@ -270,12 +189,32 @@ pub struct WifiPairing {
     pub password: String,
 }
 
+/// Where the phone said its pairing (and connect) service listens; see `Event::AdbPairHint`.
+#[derive(Clone, Debug)]
+pub struct PairHint {
+    pub pair_addr: String,
+    pub connect_addr: Option<String>,
+}
+
 impl WifiPairing {
-    pub fn new() -> Self {
+    /// One QR for both ways in (protocol §7). The service name carries this PC's IPv4
+    /// addresses (`sb-<hex ip>-...-<random>`) and the password is a SyncBoard pairing
+    /// token. Android's wireless-debugging scanner uses them for adb pairing (the phone
+    /// then advertises its pairing service under that name, which the SyncBoard app reads
+    /// to report the port when mDNS doesn't reach the PC). The SyncBoard app's own
+    /// scanner, when the phone service already runs, pairs directly with the IPs + token.
+    pub fn new(ips: &[String], token: String) -> Self {
         let r = syncboard_core::crypto::random_bytes::<16>();
         const ABC: &[u8] = b"abcdefghjkmnpqrstuvwxyz23456789";
         let pick = |b: &[u8]| b.iter().map(|x| ABC[*x as usize % ABC.len()] as char).collect::<String>();
-        WifiPairing { name: format!("syncboard-{}", pick(&r[..6])), password: pick(&r[6..16]) }
+        let mut name = String::from("sb");
+        for ip in ips.iter().filter_map(|ip| ip.parse::<std::net::Ipv4Addr>().ok()).take(4) {
+            name.push('-');
+            name.extend(ip.octets().iter().map(|b| format!("{b:02x}")));
+        }
+        name.push('-');
+        name.push_str(&pick(&r[..6]));
+        WifiPairing { name, password: token }
     }
 
     /// The text Android's wireless-debugging QR scanner expects.
@@ -301,6 +240,7 @@ fn mdns_services(adb: &Path) -> Vec<(String, String, String)> {
 pub fn wifi_pair_and_connect(
     adb: &Path,
     p: &WifiPairing,
+    hint: &std::sync::Mutex<Option<PairHint>>,
     cancel: &Arc<AtomicBool>,
     progress: &dyn Fn(&str),
 ) -> Result<String, String> {
@@ -312,6 +252,10 @@ pub fn wifi_pair_and_connect(
         }
         if Instant::now() > deadline {
             return Err("等待超时：没有发现扫码的手机。请确认手机和电脑在同一网络。".into());
+        }
+        // Whichever comes first: the phone app's report, or our own mDNS discovery.
+        if let Some(h) = hint.lock().unwrap().as_ref() {
+            break h.pair_addr.clone();
         }
         if let Some((_, _, addr)) =
             mdns_services(adb).into_iter().find(|(n, t, _)| n == &p.name && t.contains("adb-tls-pairing"))
@@ -337,6 +281,12 @@ pub fn wifi_pair_and_connect(
         let ready = devices(adb);
         if let Some(d) = ready.iter().find(|d| d.starts_with(&format!("{ip}:")) || d.contains("adb-tls-connect")) {
             return Ok(d.clone());
+        }
+        let reported = hint.lock().unwrap().as_ref().and_then(|h| h.connect_addr.clone());
+        if let Some(addr) = reported {
+            if run(adb, &["connect", &addr]).is_ok_and(|o| o.contains("connected")) {
+                return Ok(addr);
+            }
         }
         if let Some((_, _, addr)) = mdns_services(adb)
             .into_iter()

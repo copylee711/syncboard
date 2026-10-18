@@ -40,9 +40,11 @@ object DevOptions {
         else -> DevState.Hidden
     }
 
-    fun usbDebuggingOn(ctx: Context) = global(ctx, Settings.Global.ADB_ENABLED)
+    // These keep their value while developer options are off (vivo does), but only take
+    // effect with developer options on.
+    fun usbDebuggingOn(ctx: Context) = developerOptionsOn(ctx) && global(ctx, Settings.Global.ADB_ENABLED)
 
-    fun wirelessDebuggingOn(ctx: Context) = global(ctx, ADB_WIFI)
+    fun wirelessDebuggingOn(ctx: Context) = developerOptionsOn(ctx) && global(ctx, ADB_WIFI)
 
     /** Setup over adb granted WRITE_SECURE_SETTINGS, so switches can be flipped directly. */
     fun canWriteSettings(ctx: Context) =
@@ -158,8 +160,11 @@ object DevOptions {
                 "com.android.settings", "com.android.settings.development.qstile.DevelopmentTiles\$WirelessDebugging"))
             .setPackage("com.android.settings")
             .addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
+        // Tells the PC the pairing port in case its mDNS can't see this phone.
+        app.syncboard.ipc.PairHelper.start(ctx)
         if (ctx.tryStart(tile)) {
-            guide(ctx, "扫码配对电脑", "点「使用二维码配对设备」，扫电脑上的码", "在电脑 SyncBoard 点「添加手机」→「无线」，然后在这里点「使用二维码配对设备」扫描电脑上的二维码。")
+            guide(ctx, "扫码连接电脑", "点「使用二维码配对设备」，扫电脑「扫码连接」页的码",
+                "在电脑 SyncBoard 点「添加手机」，进入第 2 步「扫码连接」，然后在这里点「使用二维码配对设备」扫描那个二维码。")
         } else {
             openWirelessDebuggingSwitch(ctx)
         }

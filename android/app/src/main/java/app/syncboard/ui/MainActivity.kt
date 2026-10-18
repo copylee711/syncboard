@@ -258,7 +258,7 @@ private fun HomeScreen(
                         online.isNotEmpty() -> "复制的文字和图片会自动出现在电脑上"
                         repair -> "电脑上已没有这台手机的配对。先「移除」下面的电脑，再在电脑 SyncBoard 点「添加手机」，用这里的「扫码配对」扫码"
                         list.isNotEmpty() -> "确认电脑上的 SyncBoard 正在运行，且两边网络互通"
-                        else -> "在电脑上打开 SyncBoard，点「添加手机」→「手机 App」，然后在这里扫码"
+                        else -> "在电脑 SyncBoard 点「添加手机」进入第 2 步，然后点这里的「扫码配对」扫那个二维码"
                     },
                     fontSize = 14.sp, color = p.muted, lineHeight = 20.sp, modifier = Modifier.padding(top = 4.dp),
                 )
@@ -398,7 +398,7 @@ private fun ServiceDown() {
         if (known) {
             "手机重启后，后台同步服务会停止。SyncBoard 可以通过「无线调试」请电脑重新启动它，不需要数据线。"
         } else {
-            "SyncBoard 的后台服务需要电脑帮忙启动：在电脑上打开 SyncBoard，点「添加手机」，按下面的步骤用无线调试扫码或插上数据线，其余步骤会自动完成。"
+            "SyncBoard 的后台服务需要电脑帮忙启动一次：在电脑上打开 SyncBoard，点「添加手机」进入第 2 步「扫码连接」，再按下面的步骤操作，其余步骤会自动完成。"
         },
         fontSize = 14.sp, color = p.muted, lineHeight = 21.sp, modifier = Modifier.padding(top = 6.dp),
     )
@@ -491,13 +491,13 @@ private fun PhoneSetupSteps() {
         Divider()
         ActionRow(
             "3. 扫描电脑上的二维码",
-            "电脑 SyncBoard →「添加手机」→「无线」，然后在这里点「使用二维码配对设备」",
+            "电脑 SyncBoard 点「添加手机」→ 第 2 步「扫码连接」，然后在这里点「使用二维码配对设备」扫码",
             if (dev && wifi) p.ink else p.muted,
         ) { go { DevOptions.openWirelessDebuggingPage(ctx) } }
     }
     SectionLabel("或者用数据线")
     Group {
-        StepRow("USB 调试", "插上数据线，在手机弹窗中点「允许」，电脑上的 SyncBoard 会自动启动手机服务", usb, enabled = dev) {
+        StepRow("USB 调试", "电脑「添加手机」第 2 步点「改用数据线」，插上线并在手机弹窗中点「允许」", usb, enabled = dev) {
             go { DevOptions.openUsbDebuggingSwitch(ctx) }
         }
     }
@@ -535,7 +535,12 @@ private fun ScanScreen(onBack: () -> Unit, onResult: (String) -> Unit) {
 
     Box(Modifier.fillMaxSize().background(androidx.compose.ui.graphics.Color.Black)) {
         if (granted) {
-            QrScanner(Modifier.fillMaxSize(), accept = { it.startsWith("syncboard://pair") }, onResult = onResult)
+            QrScanner(
+                Modifier.fillMaxSize(),
+                // The PC's wireless-debugging QR also carries its addresses and a pairing token.
+                accept = { it.startsWith("syncboard://pair") || app.syncboard.ipc.AdbQr.parse(it) != null },
+                onResult = { onResult(app.syncboard.ipc.AdbQr.parse(it)?.let(app.syncboard.ipc.AdbQr::toPairUri) ?: it) },
+            )
         }
         Box(Modifier.align(Alignment.Center).size(240.dp).clip(RoundedCornerShape(20.dp))
             .background(androidx.compose.ui.graphics.Color.White.copy(alpha = 0.08f)))
@@ -543,7 +548,7 @@ private fun ScanScreen(onBack: () -> Unit, onResult: (String) -> Unit) {
             TextButton(onBack) { Text("‹ 返回", color = androidx.compose.ui.graphics.Color.White, fontSize = 16.sp) }
         }
         Text(
-            if (granted) "扫描电脑 SyncBoard「添加手机 → 手机 App」中的二维码" else "需要相机权限才能扫码",
+            if (granted) "扫描电脑 SyncBoard「添加手机」第 2 步的二维码" else "需要相机权限才能扫码",
             color = androidx.compose.ui.graphics.Color.White, fontSize = 14.sp,
             modifier = Modifier.align(Alignment.BottomCenter).navigationBarsPadding().padding(bottom = 48.dp, start = 24.dp, end = 24.dp),
         )
@@ -650,10 +655,28 @@ private fun UpdateRow(client: DaemonClient, running: Boolean) {
     var heardBack by remember { mutableStateOf(false) }
     val scope = androidx.compose.runtime.rememberCoroutineScope()
 
+    // Without the phone service: download here (checksum-verified) and hand the APK to the
+    // system installer. Not via the browser: Chrome opened from another app (a Custom Tab)
+    // can stall at 100% and never finish the file.
     fun openDownload(v: String) {
-        runCatching { ctx.startActivity(Intent(Intent.ACTION_VIEW, Uri.parse(app.syncboard.ipc.Releases.apkUrl(v)))) }
-        busy = false
-        status = "已在浏览器中下载，完成后点击安装"
+        status = "正在下载 v$v…"
+        thread {
+            val apk = java.io.File(ctx.cacheDir, "updates/${app.syncboard.ipc.Releases.apkName(v)}")
+            val r = runCatching {
+                apk.parentFile?.mkdirs()
+                apk.parentFile?.listFiles()?.forEach { it.delete() }
+                app.syncboard.ipc.Releases.downloadApk(v, apk)
+            }
+            busy = false
+            r.onFailure { status = "下载失败：${it.message}" }.onSuccess {
+                status = "下载完成，请在系统安装界面点「安装」"
+                val uri = androidx.core.content.FileProvider.getUriForFile(ctx, "app.syncboard.updates", apk)
+                runCatching {
+                    ctx.startActivity(Intent(Intent.ACTION_VIEW).setDataAndType(uri, "application/vnd.android.package-archive")
+                        .addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION or Intent.FLAG_ACTIVITY_NEW_TASK))
+                }.onFailure { status = "无法打开安装界面：${it.message}" }
+            }
+        }
     }
 
     LaunchedEffect(client) {
@@ -699,7 +722,7 @@ private fun UpdateRow(client: DaemonClient, running: Boolean) {
             title = { Text("更新到 v$v？") },
             text = {
                 Text(
-                    if (running) "将由手机服务下载并安装，完成后 SyncBoard 会自动重启。" else "手机服务未运行，将在浏览器中下载安装包。",
+                    if (running) "将由手机服务下载并安装，完成后 SyncBoard 会自动重启。" else "手机服务未运行，将下载安装包并打开系统安装界面。",
                     color = p.muted,
                 )
             },

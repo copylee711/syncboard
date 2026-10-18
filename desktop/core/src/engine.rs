@@ -64,6 +64,10 @@ pub enum Event {
     /// A paired phone connected but its session key doesn't match ours (one side
     /// was re-paired or reset); the user has to pair it again.
     KeyMismatch { id: String, name: String },
+    /// A phone that scanned our wireless-debugging QR reports its pairing (and connect)
+    /// port, for networks where mDNS doesn't reach the PC (protocol §7). `name` is the
+    /// pairing service name from the QR, so the app can tell whether it is the one it shows.
+    AdbPairHint { name: String, ip: String, pair_port: u16, connect_port: Option<u16> },
 }
 
 struct Session {
@@ -182,14 +186,18 @@ impl Engine {
         self.key_mismatch.lock().unwrap().contains(id)
     }
 
+    /// Creates a fresh single-use pairing token (base64url), valid for a few minutes.
+    pub fn new_pairing_token(&self) -> String {
+        let token = crypto::random_bytes::<32>();
+        let mut t = self.tokens.lock().unwrap();
+        t.retain(|(_, at)| at.elapsed() < TOKEN_TTL);
+        t.push((token, Instant::now()));
+        B64URL.encode(token)
+    }
+
     /// Creates a fresh single-use pairing token and returns the QR payload.
     pub fn pairing_uri(&self) -> String {
-        let token = crypto::random_bytes::<32>();
-        {
-            let mut t = self.tokens.lock().unwrap();
-            t.retain(|(_, at)| at.elapsed() < TOKEN_TTL);
-            t.push((token, Instant::now()));
-        }
+        let token = self.new_pairing_token();
         let hosts = local_ipv4s().join(",");
         let (id, name) = {
             let s = self.store.lock().unwrap();
@@ -201,7 +209,7 @@ impl Engine {
             self.port,
             id,
             url_encode(&name),
-            B64URL.encode(token)
+            token
         )
     }
 
@@ -309,6 +317,13 @@ impl Engine {
             Some("pair") => self.handle_pair(stream, first).await,
             Some("hello") => self.handle_session(stream, addr, first).await,
             Some("adb_wake") => self.handle_wake(stream, addr, first).await,
+            Some("adb_pair") => {
+                let port = |k: &str| first.get(k).and_then(Value::as_u64).and_then(|p| u16::try_from(p).ok());
+                let name = first.get("name").and_then(Value::as_str).unwrap_or_default().to_string();
+                let Some(pair_port) = port("pair_port") else { bail!("adb_pair without pair_port") };
+                self.emit(Event::AdbPairHint { name, ip: addr.ip().to_string(), pair_port, connect_port: port("connect_port") });
+                write_plain(&mut stream, &json!({"t":"ok"})).await
+            }
             other => bail!("unexpected first frame {other:?}"),
         }
     }

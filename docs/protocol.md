@@ -145,3 +145,34 @@ daemon. It answers with one plain frame before closing: `{"t":"wake_ok"}`, or
 `{"t":"wake_rejected","code":"unknown_device"|"bad_request"}`. `unknown_device` means the PC
 removed this phone; the app drops that PC from its cached wake list. Older PCs close without
 answering, which the app treats as `wake_ok`.
+
+## 7. The pairing QR
+
+The PC's 添加手机 step shows one QR in Android's wireless-debugging format:
+
+```
+WIFI:T:ADB;S:sb-<ip1>-<ip2>...-<random>;P:<token>;;
+```
+
+`<ipN>` are the PC's IPv4 addresses as 8 lowercase hex digits (at most four); `<token>` is a
+fresh QR pairing token (base64url, as `t` in §2, valid for 5 minutes). The same code serves
+both ways in:
+
+- **Phone service not running.** Android's wireless-debugging scanner (使用二维码配对设备) uses
+  `S` as the pairing service name and `P` as the password. The PC finds the phone's
+  `_adb-tls-pairing._tcp` service named `S`, runs `adb pair` and `adb connect`, and starts the
+  daemon with a fresh `syncboard://pair` URI (§2).
+- **Phone service running.** The SyncBoard app's scanner reads the hosts from `S` and the token
+  from `P`, and pairs as with `syncboard://pair?h=<hosts>&p=53317&t=<token>`.
+
+On networks that drop multicast between devices, the PC never sees the phone's mDNS. While the
+user scans, the app watches its own phone's `_adb-tls-pairing._tcp` services; on one named
+`sb-...` it decodes the hosts and sends one plain frame to TCP 53317:
+
+```
+{"t":"adb_pair","v":1,"name":<S>,"pair_port":<port>,"connect_port":<adb tls port>|null}
+```
+
+The PC answers `{"t":"ok"}` and, if `name` is the QR it is showing, pairs with
+`<sender ip>:<pair_port>` using its own password. The frame carries no secret: adb pairing still
+needs the password from the QR.

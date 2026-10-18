@@ -94,54 +94,54 @@
         <h3>添加手机</h3>
         <button class="icon-btn" id="closePair" aria-label="关闭"><svg viewBox="0 0 12 12"><path d="M2.5 2.5l7 7m0-7l-7 7"/></svg></button>
       </div>
-      <div class="tabs" role="tablist">
-        <button role="tab" data-tab="app" class="on">手机 App</button>
-        <button role="tab" data-tab="wifi">无线</button>
-        <button role="tab" data-tab="usb">数据线</button>
+      <ol class="stepper">
+        <li data-step="1">安装手机 App</li>
+        <li data-step="2">扫码连接</li>
+      </ol>
+
+      <div class="tab" data-pane="install">
+        <div class="qr" id="apkQr"></div>
+        <ol class="steps">
+          <li>用手机相机或浏览器扫描上方二维码，打开发布页</li>
+          <li>在页面下方「Assets」里点 <b id="apkName"></b> 下载，然后安装（需要 Android 10 及以上，无线连接需要 Android 11）</li>
+          <li>已经装过的手机可以直接下一步</li>
+        </ol>
+        <p class="fine">也可以在电脑上打开 <button class="link" id="releasesLink">GitHub 发布页</button>，把 <b id="apkName2"></b> 传到手机上安装。</p>
+        <div class="sheet-actions"><button class="btn ink" id="toConnect">已安装，下一步</button></div>
       </div>
 
       <div class="tab" data-pane="wifi" hidden>
         <div class="qr" id="wifiQr"></div>
         <ol class="steps">
-          <li>手机连接与电脑相同的 Wi-Fi</li>
-          <li>打开 设置 → 开发者选项 → <b>无线调试</b>，选「使用二维码配对设备」</li>
-          <li>扫描上方二维码，其余步骤自动完成</li>
+          <li>打开手机上的 SyncBoard，按它的提示扫描上方二维码：
+            <br>· 第一次使用或手机重启后：App 会带你打开无线调试，再用「使用二维码配对设备」扫码
+            <br>· 手机服务已在运行：直接点 App 里的「扫码配对」</li>
+          <li>其余步骤自动完成（手机和电脑连同一个 Wi-Fi）</li>
         </ol>
-        <p class="fine">没有开发者选项？在「关于手机」里连续点击「版本号」7 次（vivo/iQOO：设置 → 系统管理 → 关于手机 → 软件版本号）。需要 Android 11 及以上。</p>
-        <p class="fine"><button class="link" id="hotspotBtn">扫码后一直没反应？改用电脑热点</button></p>
+        <p class="fine alt">
+          <button class="link" data-go="install">‹ 上一步</button>
+          <button class="link" data-go="usb">改用数据线</button>
+          <button class="link" data-go="hotspot">扫码后没反应？用电脑热点</button>
+        </p>
+        <p class="fine">无法扫码时，在手机 App 的「添加电脑」里输入 <b id="ips"></b></p>
       </div>
 
       <div class="tab" data-pane="hotspot" hidden>
         <div class="qr" id="hotspotQr"></div>
         <ol class="steps">
           <li>用手机相机扫描上方二维码，连接电脑热点 <b id="hotspotName"></b></li>
-          <li>连上后点 <button class="link" id="hotspotNext">下一步</button>，再按无线调试的步骤扫码</li>
+          <li>连上后点 <button class="link" data-go="wifi">下一步</button>，再扫无线调试的二维码</li>
         </ol>
       </div>
 
       <div class="tab" data-pane="usb" hidden>
         <div class="usb-art"><svg viewBox="0 0 64 40"><rect x="4" y="6" width="22" height="30" rx="4"/><path d="M26 21h12m0 0v-4h8v8h-8v-4m8 0h10"/></svg></div>
         <ol class="steps">
-          <li>打开 设置 → 开发者选项 → <b>USB 调试</b></li>
+          <li>打开手机上的 SyncBoard，按提示打开开发者选项和 <b>USB 调试</b></li>
           <li>用数据线连接电脑，在手机弹窗中点「允许」</li>
-          <li>SyncBoard 会自动安装并配置手机端</li>
+          <li>其余步骤自动完成</li>
         </ol>
-      </div>
-
-      <div class="tab" data-pane="app">
-        <div class="qr" id="qr"></div>
-        <ol class="steps">
-          <li>打开手机上的 SyncBoard，点「扫码配对」，对准上方二维码</li>
-          <li>第一次使用时，App 会一步步带你打开「无线调试」，然后切到本窗口的「无线」页扫码，其余步骤自动完成</li>
-        </ol>
-        <div class="manual">无法扫码时选「手动连接」，输入 <b id="ips"></b></div>
-        <div class="get-app">
-          <div class="qr small" id="apkQr"></div>
-          <div>
-            <b>手机还没装 SyncBoard？</b>
-            <p>用手机浏览器扫码下载安装包（需要 Android 10 及以上）。也可以在 <button class="link" id="releasesLink">GitHub 发布页</button> 下载。</p>
-          </div>
-        </div>
+        <p class="fine alt"><button class="link" data-go="wifi">‹ 返回扫码连接</button></p>
       </div>
 
       <div class="setup-status" id="setupStatus" hidden><span class="spinner"></span><span id="setupText"></span></div>

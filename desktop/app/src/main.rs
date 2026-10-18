@@ -30,6 +30,9 @@ struct App {
     setup_cancel: Mutex<Option<Arc<AtomicBool>>>,
     /// Whether SyncBoard turned the hotspot on (so it turns it off again).
     hotspot_ours: AtomicBool,
+    /// The wireless pairing in progress: its QR service name, and where the phone app
+    /// reported the pairing port (see `Event::AdbPairHint`).
+    wifi_pairing: Mutex<Option<(String, Arc<Mutex<Option<adb::PairHint>>>)>>,
 }
 
 type St<'a> = tauri::State<'a, App>;
@@ -125,8 +128,8 @@ fn pairing_qr(st: St) -> Value {
 
 #[tauri::command]
 fn apk_qr() -> Value {
-    let url = update::apk_url();
-    json!({"url": url, "svg": qr_svg(&url)})
+    let url = update::release_page();
+    json!({"url": url, "apk": update::apk_name(), "svg": qr_svg(&url)})
 }
 
 #[tauri::command]
@@ -201,11 +204,13 @@ fn setup_usb(app: AppHandle, st: St) -> Result<(), String> {
 fn setup_wifi(app: AppHandle, st: St) -> Result<Value, String> {
     let adb = adb_path(&st)?;
     let cancel = new_setup(&st);
-    let pairing = adb::WifiPairing::new();
+    let pairing = adb::WifiPairing::new(&syncboard_core::engine::local_ipv4s(), st.engine.new_pairing_token());
     let svg = qr_svg(&pairing.qr_text());
+    let hint = Arc::new(Mutex::new(None));
+    *st.wifi_pairing.lock().unwrap() = Some((pairing.name.clone(), hint.clone()));
     std::thread::spawn(move || {
         let progress = |t: &str| setup_event(&app, "progress", t);
-        let r = adb::wifi_pair_and_connect(&adb, &pairing, &cancel, &progress).and_then(|serial| {
+        let r = adb::wifi_pair_and_connect(&adb, &pairing, &hint, &cancel, &progress).and_then(|serial| {
             let uri = app.state::<App>().engine.pairing_uri();
             adb::setup_device(&adb, &serial, &uri, false, &progress)
         });
@@ -406,6 +411,17 @@ fn on_engine_event(app: &AppHandle, ev: Event) {
     let st = app.state::<App>();
     let v = serde_json::to_value(&ev).unwrap_or(Value::Null);
     match &ev {
+        Event::AdbPairHint { name, ip, pair_port, connect_port } => {
+            eprintln!("[pair] {name} at {ip}:{pair_port} (connect {connect_port:?})");
+            if let Some((current, hint)) = st.wifi_pairing.lock().unwrap().as_ref() {
+                if current == name {
+                    *hint.lock().unwrap() = Some(adb::PairHint {
+                        pair_addr: format!("{ip}:{pair_port}"),
+                        connect_addr: connect_port.map(|p| format!("{ip}:{p}")),
+                    });
+                }
+            }
+        }
         Event::AdbWake { addr, .. } => {
             // A paired phone rebooted: reconnect over wireless debugging and restart it.
             let (addr, custom) = (addr.clone(), st.engine.with_store(|s| s.config.settings.adb_path.clone()));
@@ -596,6 +612,7 @@ fn main() {
                 pause_item: Mutex::new(None),
                 setup_cancel: Mutex::new(None),
                 hotspot_ours: AtomicBool::new(false),
+                wifi_pairing: Mutex::new(None),
             });
             build_tray(app)?;
             update_tray(app.handle());

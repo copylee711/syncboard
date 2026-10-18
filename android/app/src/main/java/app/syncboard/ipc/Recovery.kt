@@ -96,7 +96,7 @@ object Recovery {
      * before wireless debugging was last restarted (each restart picks a new port), so
      * every candidate is checked by connecting to it on loopback.
      */
-    private fun findAdbPort(ctx: Context, timeoutMs: Long): Int? {
+    internal fun findAdbPort(ctx: Context, timeoutMs: Long): Int? {
         val nsd = ctx.getSystemService(NsdManager::class.java)
         val found = java.util.concurrent.LinkedBlockingQueue<NsdServiceInfo>()
         val listener = object : NsdManager.DiscoveryListener {
@@ -131,7 +131,7 @@ object Recovery {
         }
     }
 
-    private fun resolve(nsd: NsdManager, s: NsdServiceInfo): NsdServiceInfo? {
+    internal fun resolve(nsd: NsdManager, s: NsdServiceInfo): NsdServiceInfo? {
         val done = CountDownLatch(1)
         var out: NsdServiceInfo? = null
         @Suppress("DEPRECATION")

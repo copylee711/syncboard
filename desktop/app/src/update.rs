@@ -42,9 +42,16 @@ pub fn latest_version() -> Result<String, String> {
         .ok_or_else(|| "没有找到发布版本".into())
 }
 
-/// Direct download of the phone APK released with this desktop version.
-pub fn apk_url() -> String {
-    format!("{REPO}/releases/download/v{VERSION}/SyncBoard-{VERSION}.apk")
+/// The phone APK released with this desktop version.
+pub fn apk_name() -> String {
+    format!("SyncBoard-{VERSION}.apk")
+}
+
+/// This version's release page. The install QR points here rather than at the APK:
+/// a direct link opened from a QR scanner lands in a Chrome Custom Tab, which can stall
+/// at 100% without finishing the download; tapping the APK on the page works.
+pub fn release_page() -> String {
+    format!("{REPO}/releases/tag/v{VERSION}")
 }
 
 fn old_exe(exe: &Path) -> PathBuf {
