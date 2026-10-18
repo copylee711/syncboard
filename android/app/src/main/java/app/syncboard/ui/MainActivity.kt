@@ -120,6 +120,25 @@ class MainActivity : ComponentActivity() {
 
 private enum class Screen { Home, Scan, Settings }
 
+/** A newer release found at startup (or by 检查更新), shared by the home banner and settings. */
+private object Updates {
+    var latest by mutableStateOf<String?>(null)
+    /** The home banner was tapped: settings opens the update dialog right away. */
+    var askOnOpen by mutableStateOf(false)
+    @Volatile var checked = false
+
+    /** Once per process, quietly; being offline is not an error worth showing. */
+    fun checkOnce(current: String) {
+        if (checked) return
+        checked = true
+        thread {
+            runCatching { app.syncboard.ipc.Releases.latestVersion() }.onSuccess { v ->
+                if (app.syncboard.ipc.Releases.isNewer(v, current)) latest = v
+            }
+        }
+    }
+}
+
 @Composable
 private fun App(client: DaemonClient, scanAtStart: Boolean, theme: String, setTheme: (String) -> Unit) {
     val p = LocalPalette.current
@@ -154,6 +173,8 @@ private fun App(client: DaemonClient, scanAtStart: Boolean, theme: String, setTh
             }
         }
     }
+
+    LaunchedEffect(Unit) { Updates.checkOnce(appVersion(ctx)) }
 
     BackHandler(screen != Screen.Home) { screen = Screen.Home }
 
@@ -211,6 +232,18 @@ private fun HomeScreen(
         Row(Modifier.fillMaxWidth().height(48.dp), verticalAlignment = Alignment.CenterVertically) {
             Text("SyncBoard", fontSize = 14.sp, fontWeight = FontWeight.SemiBold, color = p.muted, modifier = Modifier.weight(1f))
             TextButton(onSettings) { Text("设置", color = p.ink) }
+        }
+        Updates.latest?.let { v ->
+            Row(
+                Modifier.fillMaxWidth().padding(top = 4.dp).clip(RoundedCornerShape(12.dp)).background(p.surface)
+                    .clickable { Updates.askOnOpen = true; onSettings() }.padding(horizontal = 14.dp, vertical = 10.dp),
+                verticalAlignment = Alignment.CenterVertically,
+            ) {
+                Dot(p.green, 7)
+                Spacer(Modifier.width(8.dp))
+                Text("有新版本 v$v", fontSize = 14.sp, color = p.ink, modifier = Modifier.weight(1f))
+                Text("更新 ›", fontSize = 14.sp, color = p.ink, fontWeight = FontWeight.SemiBold)
+            }
         }
 
         when (conn) {
@@ -653,9 +686,12 @@ private fun SettingsScreen(
     var autoDisableDev by remember { mutableStateOf(AppPrefs.autoDisableDev(ctx)) }
     var confirmStop by remember { mutableStateOf(false) }
     var pickFolders by remember { mutableStateOf(false) }
+    val scroll = rememberScrollState()
+    // Opened from the home banner: show the update row (its progress) at the bottom.
+    LaunchedEffect(scroll.maxValue) { if (Updates.askOnOpen && scroll.maxValue > 0) scroll.scrollTo(scroll.maxValue) }
 
     Column(
-        Modifier.fillMaxSize().statusBarsPadding().navigationBarsPadding().verticalScroll(rememberScrollState())
+        Modifier.fillMaxSize().statusBarsPadding().navigationBarsPadding().verticalScroll(scroll)
             .padding(horizontal = 20.dp, vertical = 8.dp),
     ) {
         Row(Modifier.fillMaxWidth().height(48.dp), verticalAlignment = Alignment.CenterVertically) {
@@ -807,7 +843,7 @@ private fun UpdateRow(client: DaemonClient, running: Boolean) {
     val p = LocalPalette.current
     val ctx = LocalContext.current
     val current = remember { appVersion(ctx) }
-    var latest by remember { mutableStateOf<String?>(null) }
+    val latest = Updates.latest
     var status by remember { mutableStateOf<String?>(null) }
     var busy by remember { mutableStateOf(false) }
     var confirm by remember { mutableStateOf(false) }
@@ -817,7 +853,8 @@ private fun UpdateRow(client: DaemonClient, running: Boolean) {
     fun showProgress(v: String, done: Long, total: Long) {
         progress = if (total > 0) (done.toFloat() / total).coerceIn(0f, 1f) else -1f
         val mb = "%.1f".format(done / 1048576f)
-        status = if (total > 0) "正在下载 v$v… ${(done * 100 / total)}%（$mb / ${"%.1f".format(total / 1048576f)} MB）"
+        status = if (done == 0L && total <= 0) "正在下载 v$v…"
+        else if (total > 0) "正在下载 v$v… ${(done * 100 / total)}%（$mb / ${"%.1f".format(total / 1048576f)} MB）"
         else "正在下载 v$v… $mb MB"
     }
     val scope = androidx.compose.runtime.rememberCoroutineScope()
@@ -845,6 +882,10 @@ private fun UpdateRow(client: DaemonClient, running: Boolean) {
                 }.onFailure { status = "无法打开安装界面：${it.message}" }
             }
         }
+    }
+
+    LaunchedEffect(Updates.askOnOpen) {
+        if (Updates.askOnOpen && !busy && latest != null) confirm = true
     }
 
     LaunchedEffect(client) {
@@ -883,7 +924,7 @@ private fun UpdateRow(client: DaemonClient, running: Boolean) {
                     val r = runCatching { app.syncboard.ipc.Releases.latestVersion() }
                     busy = false
                     r.onSuccess { v ->
-                        if (app.syncboard.ipc.Releases.isNewer(v, current)) { latest = v; status = null; confirm = true }
+                        if (app.syncboard.ipc.Releases.isNewer(v, current)) { Updates.latest = v; status = null; confirm = true }
                         else status = "已是最新版本"
                     }.onFailure { status = "检查失败：${it.message}" }
                 }
@@ -895,7 +936,7 @@ private fun UpdateRow(client: DaemonClient, running: Boolean) {
     if (confirm) {
         val v = latest!!
         AlertDialog(
-            onDismissRequest = { confirm = false },
+            onDismissRequest = { confirm = false; Updates.askOnOpen = false },
             title = { Text("更新到 v$v？") },
             text = {
                 Text(
@@ -906,6 +947,7 @@ private fun UpdateRow(client: DaemonClient, running: Boolean) {
             confirmButton = {
                 TextButton({
                     confirm = false
+                    Updates.askOnOpen = false
                     busy = true
                     heardBack = false
                     if (running && client.cmd("selfUpdate", "version" to v)) {
@@ -918,7 +960,7 @@ private fun UpdateRow(client: DaemonClient, running: Boolean) {
                 }) { Text("更新", color = p.ink) }
             },
             dismissButton = {
-                TextButton({ confirm = false; runCatching { ctx.startActivity(Intent(Intent.ACTION_VIEW, Uri.parse(app.syncboard.ipc.Releases.pageUrl(v)))) } }) {
+                TextButton({ confirm = false; Updates.askOnOpen = false; runCatching { ctx.startActivity(Intent(Intent.ACTION_VIEW, Uri.parse(app.syncboard.ipc.Releases.pageUrl(v)))) } }) {
                     Text("查看发布说明", color = p.muted)
                 }
             },

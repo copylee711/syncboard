@@ -67,6 +67,9 @@ svg { fill: none; stroke: currentColor; stroke-width: 1.7; stroke-linecap: round
 .tb-spacer { flex: 1; align-self: stretch; }
 .tb-btn { width: 46px; height: 40px; border: none; background: none; display: grid; place-items: center; cursor: default; color: var(--muted); }
 .tb-btn svg { width: 11px; height: 11px; stroke-width: 1.2; }
+.tb-update { align-self: center; margin-right: 6px; padding: 3px 10px; border-radius: 999px; border: none; background: var(--ink); color: var(--on-ink); font: inherit; font-size: 12px; cursor: pointer; }
+.tb-update:hover { opacity: .85; }
+.tb-update:disabled { opacity: .7; cursor: default; }
 .tb-btn:hover { background: var(--hover); color: var(--text); }
 .tb-btn.close:hover { background: #c42b1c; color: #fff; }
 

@@ -96,6 +96,10 @@ function render() {
   $("autostart").checked = s.autostart;
   $("sendto").checked = s.sendto;
   $("downloadDir").textContent = s.downloadDir;
+  if (!$("updateBadge").disabled) {
+    $("updateBadge").hidden = !available;
+    $("updateBadge").textContent = available ? `有新版本 v${available}` : "";
+  }
   $("versionInfo").textContent = available ? `v${s.version} · 有新版本 v${available}` : `v${s.version}`;
   $("adbPath").textContent = s.adb ? `adb：${s.adb}` : "未找到 adb";
   $("ips").textContent = s.ips.join(" 或 ") || "（未检测到局域网地址）";
@@ -251,6 +255,8 @@ $("updateBtn").onclick = async () => {
       if (!confirm(`发现新版本 v${r.latest}（当前 v${r.current}）。现在下载并重启 SyncBoard？`)) return;
     }
     btn.textContent = "正在下载…";
+    $("updateBadge").disabled = true;
+    $("updateBadge").textContent = "正在下载…";
     $("updateBar").firstElementChild.style.width = "0%";
     $("updateBar").hidden = false;
     await call("install_update", { version: available });
@@ -258,10 +264,19 @@ $("updateBtn").onclick = async () => {
     // call() already showed the error
   } finally {
     $("updateBar").hidden = true;
+    $("updateBadge").disabled = false;
+    render();
     btn.disabled = false;
     btn.textContent = available ? `更新到 v${available}` : "检查更新";
     btn.classList.toggle("ink", !!available);
   }
+};
+// Shown when the startup check found a newer release: one click to update.
+$("updateBadge").onclick = () => {
+  if (!available || $("updateBtn").disabled) return;
+  if (!confirm(`下载并安装 v${available}？完成后 SyncBoard 会自动重启。`)) return;
+  $("updateBtn").scrollIntoView({ behavior: "smooth", block: "center" });
+  $("updateBtn").click();
 };
 $("adbBtn").onclick = async () => {
   $("adbBtn").disabled = true;
@@ -308,9 +323,9 @@ listen("updateProgress", (e) => {
   const mb = (n) => (n / 1048576).toFixed(1);
   if (total > 0) {
     $("updateBar").firstElementChild.style.width = `${Math.min(100, (done * 100) / total)}%`;
-    $("updateBtn").textContent = `正在下载 ${Math.floor((done * 100) / total)}%`;
+    $("updateBtn").textContent = $("updateBadge").textContent = `正在下载 ${Math.floor((done * 100) / total)}%`;
   } else {
-    $("updateBtn").textContent = `正在下载 ${mb(done)} MB`;
+    $("updateBtn").textContent = $("updateBadge").textContent = `正在下载 ${mb(done)} MB`;
   }
 });
 
@@ -367,3 +382,13 @@ document.addEventListener("keydown", (e) => {
 document.addEventListener("contextmenu", (e) => e.preventDefault());
 
 refresh();
+
+// Look for a newer release quietly at startup; errors (offline) are ignored.
+setTimeout(() => {
+  invoke("check_update").then((r) => {
+    if (r.newer) {
+      available = r.latest;
+      if (state) render();
+    }
+  }).catch(() => {});
+}, 3000);
