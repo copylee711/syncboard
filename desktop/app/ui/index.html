@@ -78,13 +78,19 @@
       <div class="group">
         <label class="row"><span>文本</span><span class="switch"><input type="checkbox" data-setting="sync_text" /><i></i></span></label>
         <label class="row"><span>图片</span><span class="switch"><input type="checkbox" data-setting="sync_images" /><i></i></span></label>
-        <label class="row"><span>短信验证码复制到剪贴板<small>手机收到验证码短信时自动复制，直接粘贴</small></span><span class="switch"><input type="checkbox" data-setting="copy_sms_codes" /><i></i></span></label>
-        <label class="row"><span>手机消息通知<small>用 Windows 通知显示手机发来的验证码、短信和 App 通知（在手机设置里选择发送哪些）</small></span><span class="switch"><input type="checkbox" data-setting="phone_notifications" /><i></i></span></label>
-        <label class="row"><span>电脑上已开着微信、QQ 时不重复提醒<small>这些 App 电脑版自己会弹通知，手机转来的就跳过（也支持 TIM、企业微信、钉钉、飞书、Telegram）</small></span><span class="switch"><input type="checkbox" data-setting="skip_running_apps" /><i></i></span></label>
-        <div class="row"><span>按 App 设置<small>关掉不想在电脑上看到的 App 通知</small></span><button class="btn small" id="appsBtn">选择</button></div>
-        <div class="row"><span>发送测试通知<small>看不到通知时，检查 Windows「设置 → 系统 → 通知」和「勿扰」</small></span><button class="btn small" id="testNotify">测试</button></div>
         <label class="row"><span>自动接收文件</span><span class="switch"><input type="checkbox" data-setting="auto_accept_files" /><i></i></span></label>
         <div class="row"><span>接收位置<small id="downloadDir"></small></span><span class="row-btns"><button class="btn small" id="downloadPick">更改</button><button class="btn small" id="folderBtn2">打开</button></span></div>
+      </div>
+    </section>
+
+    <section>
+      <div class="section-head"><h2>短信与通知</h2></div>
+      <div class="group">
+        <label class="row"><span>验证码自动复制<small>手机收到验证码短信时，验证码直接进电脑剪贴板</small></span><span class="switch"><input type="checkbox" data-setting="copy_sms_codes" /><i></i></span></label>
+        <label class="row"><span>用 Windows 通知显示<small>手机发来的验证码、短信和 App 通知；发送哪些在手机 App 设置里选</small></span><span class="switch"><input type="checkbox" data-setting="phone_notifications" /><i></i></span></label>
+        <label class="row notif-sub"><span>电脑上开着微信、QQ 时跳过<small>它们电脑版自己会提醒，避免弹两次（也适用于 TIM、企业微信、钉钉、飞书、Telegram）</small></span><span class="switch"><input type="checkbox" data-setting="skip_running_apps" /><i></i></span></label>
+        <div class="row notif-sub"><span>按 App 设置<small>关掉不想在电脑上看到的 App</small></span><button class="btn small" id="appsBtn">选择</button></div>
+        <div class="row notif-sub"><span>发送测试通知<small>看不到时，检查 Windows「设置 → 系统 → 通知」和「勿扰」</small></span><button class="btn small" id="testNotify">测试</button></div>
       </div>
     </section>
 

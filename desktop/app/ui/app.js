@@ -96,6 +96,7 @@ function render() {
   renderTransfers();
 
   document.querySelectorAll("[data-setting]").forEach((el) => (el.checked = !!s.settings[el.dataset.setting]));
+  document.querySelectorAll(".notif-sub").forEach((el) => (el.hidden = !s.settings.phone_notifications));
   $("autostart").checked = s.autostart;
   $("sendto").checked = s.sendto;
   $("downloadDir").textContent = s.downloadDir;
