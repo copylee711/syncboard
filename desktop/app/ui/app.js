@@ -233,7 +233,10 @@ $("closeBtn").onclick = () => win.close();
 $("addBtn").onclick = openPair;
 $("githubBtn").onclick = $("releasesLink").onclick = () => call("open_releases");
 $("closePair").onclick = closePair;
-$("pairSheet").onclick = (e) => e.target.id === "pairSheet" && closePair();
+// Block bodies: an on* handler that returns false cancels the click (and form submits).
+$("pairSheet").onclick = (e) => {
+  if (e.target.id === "pairSheet") closePair();
+};
 $("acceptBtn").onclick = () => answer(true);
 $("rejectBtn").onclick = () => answer(false);
 $("sendBtn").onclick = () => call("pick_and_send", { peer: null });
@@ -314,7 +317,9 @@ $("peers").onclick = async (e) => {
     refresh();
   }
 };
-$("transfers").onclick = (e) => e.target.closest("[data-open]") && call("open_downloads");
+$("transfers").onclick = (e) => {
+  if (e.target.closest("[data-open]")) call("open_downloads");
+};
 
 listen("state", (e) => {
   state = e.payload;
@@ -494,7 +499,9 @@ $("linkForm").onsubmit = async (e) => {
   await phoneCmd("open", { url }).then(() => toast("已在手机上打开")).catch(() => {});
 };
 $("linkCancel").onclick = () => ($("linkSheet").hidden = true);
-$("linkSheet").onclick = (e) => e.target.id === "linkSheet" && ($("linkSheet").hidden = true);
+$("linkSheet").onclick = (e) => {
+  if (e.target.id === "linkSheet") $("linkSheet").hidden = true;
+};
 
 // ---------- clipboard history ----------
 

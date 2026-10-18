@@ -66,6 +66,7 @@ const ICONS = {
   open: '<svg viewBox="0 0 24 24"><path d="M14 4h6v6M20 4l-9 9M18 14v5a1 1 0 01-1 1H5a1 1 0 01-1-1V7a1 1 0 011-1h5"/></svg>',
   reveal: '<svg viewBox="0 0 24 24"><path d="M3 7a2 2 0 012-2h4l2 2h8a2 2 0 012 2v8a2 2 0 01-2 2H5a2 2 0 01-2-2z"/></svg>',
   link: '<svg viewBox="0 0 24 24"><path d="M10 14a4 4 0 005.7 0l3-3a4 4 0 00-5.7-5.7l-1 1M14 10a4 4 0 00-5.7 0l-3 3a4 4 0 005.7 5.7l1-1"/></svg>',
+  explorer: '<svg viewBox="0 0 24 24"><path d="M3 7a2 2 0 012-2h4l2 2h8a2 2 0 012 2v2"/><path d="M3 7v10a2 2 0 002 2h6"/><path d="M15 13h6v6M21 13l-7 7"/></svg>',
   star: '<svg viewBox="0 0 24 24"><path d="M12 3.5l2.6 5.3 5.9.9-4.3 4.1 1 5.8L12 16.9l-5.2 2.7 1-5.8-4.3-4.1 5.9-.9z"/></svg>',
   x: '<svg viewBox="0 0 12 12"><path d="M2.5 2.5l7 7m0-7l-7 7"/></svg>',
 };
@@ -167,6 +168,7 @@ class Pane {
         <div class="p-title">${who}<span class="grow"></span>
           <label class="search">${ICONS.search}<input data-r="search" placeholder="筛选当前文件夹" spellcheck="false" /></label>
           <button class="tool" data-a="newdir" title="新建文件夹 (Ctrl+Shift+N)">${ICONS.newdir}</button>
+          ${this.isPhone ? "" : `<button class="tool" data-a="explorer" title="在资源管理器中打开当前文件夹">${ICONS.explorer}</button>`}
           <button class="tool" data-a="hidden" title="显示隐藏文件">${ICONS.eye}</button>
           <button class="tool" data-a="refresh" title="刷新 (F5)">${ICONS.refresh}</button>
         </div>
@@ -388,6 +390,7 @@ class Pane {
     b("newdir").disabled = !this.ready() || this.path === "" || this.path == null;
     b("hidden").classList.toggle("on", this.showHidden);
     b("refresh").disabled = !this.ready();
+    if (!this.isPhone) b("explorer").disabled = !this.path;
 
     if (this.isPhone) {
       const peers = connectedPeers();
@@ -564,7 +567,9 @@ class Pane {
       .join("");
     this.r.places.querySelectorAll("button").forEach((b) => {
       // Press and drag sideways to reorder; a plain click opens the place.
-      b.onmousedown = (e) => e.button === 0 && dragChip(this, b, e);
+      b.onmousedown = (e) => {
+        if (e.button === 0) dragChip(this, b, e);
+      };
       b.onclick = () => {
         if (b._dragged) return (b._dragged = false);
         this.go(b.dataset.p);
@@ -737,6 +742,7 @@ class Pane {
       this.render();
     }
     if (a === "newdir") newFolder(this);
+    if (a === "explorer" && this.path) call("local_open", { path: this.path });
     if (a === "fav" && this.path) this.isFav(this.path) ? this.removeFav(this.path) : this.addFav(this.path);
   }
 }
@@ -974,7 +980,10 @@ function dialog({ title, text = "", value = null, ok = "确定", danger = false,
       close(value != null ? input.value.trim() : true);
     };
     $("dialogCancel").onclick = () => close(null);
-    $("dialog").onclick = (e) => e.target.id === "dialog" && close(null);
+    // A block body: returning false from an on* handler would cancel the OK button's submit.
+    $("dialog").onclick = (e) => {
+      if (e.target.id === "dialog") close(null);
+    };
   });
 }
 
@@ -1017,10 +1026,11 @@ async function rename(pane) {
 async function remove(pane) {
   if (!pane.sel.size || pane.path === "") return;
   const n = pane.sel.size;
-  const what = n === 1 ? `「${[...pane.sel][0]}」` : `这 ${n} 项`;
+  const names = [...pane.sel];
+  const what = n === 1 ? `「${names[0]}」` : `「${names[0]}」等 ${n} 项`;
   const ok = pane.isPhone
-    ? await dialog({ title: `删除${what}？`, text: "手机上的文件会被永久删除，无法恢复。", ok: "删除", danger: true })
-    : await dialog({ title: `把${what}移到回收站？`, ok: "删除", danger: true });
+    ? await dialog({ title: "永久删除？", text: `${what}会从手机上永久删除，无法恢复。`, ok: "删除", danger: true })
+    : await dialog({ title: "移到回收站？", text: `${what}会被移到回收站，需要时可以从回收站还原。`, ok: "移到回收站", danger: true });
   if (!ok) return;
   const paths = pane.selPaths();
   try {

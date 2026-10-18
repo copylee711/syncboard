@@ -152,7 +152,12 @@ body.fm { font-size: 13px; }
 
 .field { width: 100%; height: 34px; margin: 12px 0 14px; border: 1px solid var(--line); border-radius: 8px; background: var(--bg); color: var(--text); font: inherit; padding: 0 10px; outline: none; }
 .field:focus { border-color: var(--ink); background: var(--surface); }
-#dialog .sheet { width: min(380px, calc(100% - 32px)); }
+#dialog .sheet { width: min(400px, calc(100% - 32px)); padding: 22px 22px 20px; }
+#dialog h3 { font-size: 16px; line-height: 1.4; }
+#dialog .muted { margin: 10px 0 0; font-size: 13px; line-height: 1.6; word-break: break-all; }
+#dialog .field { margin: 14px 0 0; }
+#dialog .sheet-actions { margin-top: 22px; justify-content: flex-end; }
+#dialog .sheet-actions .btn { flex: none; min-width: 96px; }
 #dialog .btn.danger { background: var(--danger); border-color: var(--danger); color: #fff; }
 
 @media (max-width: 760px) {
@@ -180,3 +185,6 @@ body.dragging, body.dragging * { cursor: default !important; }
 .place.lifting { position: relative; z-index: 3; box-shadow: 0 4px 14px rgba(0,0,0,.18); background: var(--surface); transition: none; }
 .place.insert-before { box-shadow: -3px 0 0 -1px var(--ink); }
 .places.insert-end::after { content: ""; flex: none; width: 2px; height: 18px; align-self: center; background: var(--ink); border-radius: 1px; }
+#dialog .btn:focus { outline: none; }
+#dialog .btn:focus-visible { box-shadow: 0 0 0 3px color-mix(in srgb, var(--ink) 16%, transparent); }
+#dialog .btn.danger:focus-visible { box-shadow: 0 0 0 3px color-mix(in srgb, var(--danger) 28%, transparent); }
