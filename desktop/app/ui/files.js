@@ -66,6 +66,7 @@ const ICONS = {
   open: '<svg viewBox="0 0 24 24"><path d="M14 4h6v6M20 4l-9 9M18 14v5a1 1 0 01-1 1H5a1 1 0 01-1-1V7a1 1 0 011-1h5"/></svg>',
   reveal: '<svg viewBox="0 0 24 24"><path d="M3 7a2 2 0 012-2h4l2 2h8a2 2 0 012 2v8a2 2 0 01-2 2H5a2 2 0 01-2-2z"/></svg>',
   link: '<svg viewBox="0 0 24 24"><path d="M10 14a4 4 0 005.7 0l3-3a4 4 0 00-5.7-5.7l-1 1M14 10a4 4 0 00-5.7 0l-3 3a4 4 0 005.7 5.7l1-1"/></svg>',
+  star: '<svg viewBox="0 0 24 24"><path d="M12 3.5l2.6 5.3 5.9.9-4.3 4.1 1 5.8L12 16.9l-5.2 2.7 1-5.8-4.3-4.1 5.9-.9z"/></svg>',
   x: '<svg viewBox="0 0 12 12"><path d="M2.5 2.5l7 7m0-7l-7 7"/></svg>',
 };
 const KIND_ICON = {
@@ -174,6 +175,7 @@ class Pane {
           <button class="tool" data-a="fwd" title="前进 (Alt+→)">${ICONS.fwd}</button>
           <button class="tool" data-a="up" title="上一级 (Backspace)">${ICONS.up}</button>
           <div class="crumbs" data-r="crumbs"></div>
+          <button class="tool" data-a="fav" title="收藏这个文件夹">${ICONS.star}</button>
         </div>
         <div class="places" data-r="places"></div>
       </div>
@@ -200,6 +202,13 @@ class Pane {
         this.render();
       };
     });
+    // The places row scrolls sideways with the mouse wheel.
+    this.r.places.addEventListener("wheel", (e) => {
+      if (Math.abs(e.deltaY) > Math.abs(e.deltaX)) {
+        this.r.places.scrollLeft += e.deltaY;
+        e.preventDefault();
+      }
+    }, { passive: false });
     this.r.search.oninput = () => {
       this.filter = this.r.search.value.trim().toLowerCase();
       this.render();
@@ -223,6 +232,11 @@ class Pane {
 
     const list = this.r.list;
     list.onclick = (e) => {
+      // The click that ends a box selection.
+      if (this.boxed) {
+        this.boxed = false;
+        return;
+      }
       const row = e.target.closest(".row-f");
       if (!row) {
         if (!e.ctrlKey && !e.shiftKey) this.clearSel();
@@ -244,10 +258,12 @@ class Pane {
     list.onscroll = () => hideMenu();
 
     // Dragging rows to the other pane, onto folders or the breadcrumb: see startDrag.
+    // Pressing on a file's icon or name drags it; anywhere else draws a selection box.
     list.onmousedown = (e) => {
+      if (e.button !== 0) return;
       const row = e.target.closest(".row-f");
-      if (e.button !== 0 || !row || this.path === "") return;
-      startDrag(this, row, e);
+      if (row && e.target.closest(".f-icon, .f-label") && this.path !== "") return startDrag(this, row, e);
+      if (e.target === list || row) startBox(this, e);
     };
   }
 
@@ -340,7 +356,7 @@ class Pane {
         const size = e.drive ? "" : e.d ? (this.isPhone ? `${e.s} 项` : "") : fmtSize(e.s);
         const cls = ["row-f", this.sel.has(e.n) ? "sel" : "", cutSet?.has(this.join(e.n)) ? "cut" : ""].join(" ");
         return `<div class="${cls}" data-n="${esc(e.n)}">
-          <span class="f-name"><span class="f-icon k-${k}"${thumb ? ` data-thumb="${esc(e.n)}" data-m="${e.m}"` : ""}>${KIND_ICON[k]}</span><span title="${esc(e.n)}">${esc(e.label || e.n)}</span></span>
+          <span class="f-name"><span class="f-icon k-${k}"${thumb ? ` data-thumb="${esc(e.n)}" data-m="${e.m}"` : ""}>${KIND_ICON[k]}</span><span class="f-label" title="${esc(e.n)}">${esc(e.label || e.n)}</span></span>
           <span class="f-date">${fmtDate(e.m)}</span><span class="f-size">${size}</span></div>`;
       })
       .join("");
@@ -464,10 +480,116 @@ class Pane {
     return [...pcPlaces.places, ...pcPlaces.drives.map((d) => ({ name: d.name, path: d.path }))];
   }
 
+  // ---- favorites (per side, and per phone), kept in this window's local storage ----
+
+  favKey() {
+    return this.isPhone ? (peer ? `fm.fav.phone.${peer}` : null) : "fm.fav.pc";
+  }
+  favs() {
+    const k = this.favKey();
+    if (!k) return [];
+    try {
+      return JSON.parse(localStorage.getItem(k) || "[]");
+    } catch {
+      return [];
+    }
+  }
+  saveFavs(list) {
+    const k = this.favKey();
+    if (!k) return;
+    try {
+      localStorage.setItem(k, JSON.stringify(list));
+    } catch {}
+    this.renderHead();
+  }
+  isFav(path) {
+    return this.favs().some((f) => f.path === path);
+  }
+  baseName(path) {
+    return path.replace(/[\\/]+$/, "").split(/[\\/]/).pop() || path;
+  }
+  addFav(path, name = this.baseName(path)) {
+    if (!path || this.isFav(path)) return;
+    this.saveFavs([...this.favs(), { name, path }]);
+    toast(`已收藏「${name}」`);
+  }
+  removeFav(path) {
+    this.saveFavs(this.favs().filter((f) => f.path !== path));
+  }
+  async renameFav(path) {
+    const f = this.favs().find((x) => x.path === path);
+    if (!f) return;
+    const name = await dialog({ title: "重命名收藏", value: f.name, ok: "保存" });
+    if (name) this.saveFavs(this.favs().map((x) => (x.path === path ? { ...x, name } : x)));
+  }
+
+  // Order of the places row (favorites and built-ins mixed) and hidden built-ins.
+  prefKey(what) {
+    return this.isPhone ? (peer ? `fm.${what}.phone.${peer}` : null) : `fm.${what}.pc`;
+  }
+  pref(what) {
+    const k = this.prefKey(what);
+    try {
+      return (k && JSON.parse(localStorage.getItem(k) || "[]")) || [];
+    } catch {
+      return [];
+    }
+  }
+  setPref(what, v) {
+    const k = this.prefKey(what);
+    try {
+      if (k) v == null ? localStorage.removeItem(k) : localStorage.setItem(k, JSON.stringify(v));
+    } catch {}
+    this.renderPlaces();
+  }
+
+  /** Favorites, then built-ins, in the user's order; hidden built-ins left out. */
+  chips() {
+    const hidden = new Set(this.pref("hidden"));
+    const all = [...this.favs().map((f) => ({ ...f, fav: true })), ...this.places().filter((p) => !hidden.has(p.path))];
+    const seen = new Set();
+    const uniq = all.filter((p) => !seen.has(p.path) && seen.add(p.path));
+    const order = this.pref("order");
+    const rank = (p) => {
+      const i = order.indexOf(p.path);
+      return i < 0 ? order.length + uniq.indexOf(p) : i;
+    };
+    return uniq.sort((a, b) => rank(a) - rank(b));
+  }
+
   renderPlaces() {
-    const list = this.places();
-    this.r.places.innerHTML = list.map((p) => `<button class="place${p.path === this.path ? " on" : ""}" data-p="${esc(p.path)}">${esc(p.name)}</button>`).join("");
-    this.r.places.querySelectorAll("button").forEach((b) => (b.onclick = () => this.go(b.dataset.p)));
+    const chips = this.chips();
+    this.r.places.innerHTML = chips
+      .map((p) => `<button class="place${p.fav ? " fav" : ""}${p.path === this.path ? " on" : ""}" data-p="${esc(p.path)}"${p.fav ? ` data-fav="1"` : ""} title="${esc(p.path)}">${p.fav ? ICONS.star : ""}${esc(p.name)}</button>`)
+      .join("");
+    this.r.places.querySelectorAll("button").forEach((b) => {
+      // Press and drag sideways to reorder; a plain click opens the place.
+      b.onmousedown = (e) => e.button === 0 && dragChip(this, b, e);
+      b.onclick = () => {
+        if (b._dragged) return (b._dragged = false);
+        this.go(b.dataset.p);
+      };
+      b.oncontextmenu = (e) => {
+        e.preventDefault();
+        e.stopPropagation();
+        const path = b.dataset.p;
+        const reset = ["refresh", "恢复默认位置和顺序", () => {
+          this.setPref("order", null);
+          this.setPref("hidden", null);
+        }];
+        showItems(b.dataset.fav
+          ? [["open", "打开", () => this.go(path)], ["rename", "重命名收藏", () => this.renameFav(path)], "-",
+             ["star", "取消收藏", () => this.removeFav(path), false, "", true], "-", reset]
+          : [["open", "打开", () => this.go(path)], ["x", "隐藏这个位置", () => this.setPref("hidden", [...this.pref("hidden"), path])], "-", reset],
+          e.clientX, e.clientY);
+      };
+    });
+    const star = this.el.querySelector('[data-a="fav"]');
+    const on = this.path != null && this.path !== "" && this.isFav(this.path);
+    star.classList.toggle("on", on);
+    star.classList.toggle("starred", on);
+    star.disabled = !this.ready() || !this.path;
+    star.title = on ? "取消收藏这个文件夹" : "收藏这个文件夹";
   }
 
   renderFoot() {
@@ -615,6 +737,7 @@ class Pane {
       this.render();
     }
     if (a === "newdir") newFolder(this);
+    if (a === "fav" && this.path) this.isFav(this.path) ? this.removeFav(this.path) : this.addFav(this.path);
   }
 }
 
@@ -689,6 +812,112 @@ function startDrag(pane, row, e) {
   document.addEventListener("mouseup", up);
 }
 
+/**
+ * Box selection, as in Explorer: rows the box touches get selected (added to the current
+ * selection with Ctrl). The list scrolls when the pointer nears its top or bottom edge.
+ */
+function startBox(pane, e) {
+  const list = pane.r.list;
+  const lr = () => list.getBoundingClientRect();
+  const at = (cx, cy) => ({ x: cx - lr().left, y: cy - lr().top + list.scrollTop });
+  const start = at(e.clientX, e.clientY);
+  const base = e.ctrlKey ? new Set(pane.sel) : new Set();
+  let cur = { x: e.clientX, y: e.clientY };
+  let box = null;
+  let raf = 0;
+  const update = () => {
+    const p = at(cur.x, cur.y);
+    const x0 = Math.min(start.x, p.x), x1 = Math.max(start.x, p.x);
+    const y0 = Math.min(start.y, p.y), y1 = Math.max(start.y, p.y);
+    Object.assign(box.style, { left: `${x0}px`, top: `${y0}px`, width: `${x1 - x0}px`, height: `${y1 - y0}px` });
+    const sel = new Set(base);
+    for (const r of list.querySelectorAll(".row-f")) {
+      const top = r.offsetTop, bottom = top + r.offsetHeight;
+      const left = r.offsetLeft, right = left + r.offsetWidth;
+      if (bottom > y0 && top < y1 && right > x0 && left < x1) {
+        if (e.ctrlKey && base.has(r.dataset.n)) sel.delete(r.dataset.n);
+        else sel.add(r.dataset.n);
+      }
+    }
+    pane.sel = sel;
+    pane.refreshSel();
+  };
+  const scroll = () => {
+    const r = lr();
+    const edge = 28;
+    const dy = cur.y < r.top + edge ? -Math.ceil((r.top + edge - cur.y) / 3) : cur.y > r.bottom - edge ? Math.ceil((cur.y - r.bottom + edge) / 3) : 0;
+    if (dy) {
+      list.scrollTop += dy;
+      update();
+    }
+    raf = requestAnimationFrame(scroll);
+  };
+  const move = (ev) => {
+    cur = { x: ev.clientX, y: ev.clientY };
+    if (!box) {
+      if (Math.hypot(ev.clientX - e.clientX, ev.clientY - e.clientY) < 5) return;
+      box = document.createElement("div");
+      box.className = "marquee";
+      list.appendChild(box);
+      raf = requestAnimationFrame(scroll);
+    }
+    update();
+  };
+  const up = () => {
+    document.removeEventListener("mousemove", move);
+    document.removeEventListener("mouseup", up);
+    cancelAnimationFrame(raf);
+    if (!box) return;
+    box.remove();
+    pane.boxed = true;
+    pane.anchor = [...pane.sel].pop() || null;
+  };
+  document.addEventListener("mousemove", move);
+  document.addEventListener("mouseup", up);
+}
+
+/** Reorders a places chip by dragging it sideways; the new order is remembered. */
+function dragChip(pane, chip, e) {
+  const row = pane.r.places;
+  const x0 = e.clientX;
+  let moving = false;
+  const others = () => [...row.querySelectorAll(".place")].filter((c) => c !== chip);
+  const move = (ev) => {
+    const dx = ev.clientX - x0;
+    if (!moving) {
+      if (Math.abs(dx) < 6) return;
+      moving = true;
+      chip.classList.add("lifting");
+      document.body.classList.add("dragging");
+    }
+    chip.style.transform = `translateX(${dx}px)`;
+    // Show where it would land.
+    const at = others().find((c) => {
+      const r = c.getBoundingClientRect();
+      return ev.clientX < r.left + r.width / 2;
+    });
+    others().forEach((c) => c.classList.toggle("insert-before", c === at));
+    row.classList.toggle("insert-end", !at);
+  };
+  const up = (ev) => {
+    document.removeEventListener("mousemove", move);
+    document.removeEventListener("mouseup", up);
+    if (!moving) return;
+    chip._dragged = true;
+    document.body.classList.remove("dragging");
+    row.classList.remove("insert-end");
+    const at = others().find((c) => {
+      const r = c.getBoundingClientRect();
+      return ev.clientX < r.left + r.width / 2;
+    });
+    const order = others().map((c) => c.dataset.p);
+    order.splice(at ? order.indexOf(at.dataset.p) : order.length, 0, chip.dataset.p);
+    pane.setPref("order", order);
+  };
+  document.addEventListener("mousemove", move);
+  document.addEventListener("mouseup", up);
+}
+
 /** Where a drag would drop: a folder row, a breadcrumb, or (other pane only) its current folder. */
 function dropTarget(ev) {
   const el = document.elementFromPoint(ev.clientX, ev.clientY);
@@ -697,7 +926,7 @@ function dropTarget(ev) {
   const pane = panes[paneEl.dataset.side];
   if (!pane.ready() || !pane.path || pane.error) return null;
   const same = pane === drag.pane;
-  const crumb = el.closest(".crumbs button");
+  const crumb = el.closest(".crumbs button") || el.closest(".places .place");
   if (crumb && crumb.dataset.p) {
     if (same && crumb.dataset.p === pane.path) return null;
     return { pane, dest: crumb.dataset.p, el: crumb, label: crumb.textContent };
@@ -860,6 +1089,10 @@ function showMenu(pane, x, y) {
   if (!atDrives) items.push(["paste", clip ? `粘贴 ${clip.paths.length} 项${clip.side !== pane.side ? `（从${clip.side === "pc" ? "电脑" : "手机"}）` : ""}` : "粘贴", () => paste(clip, pane), !clip || !pane.ready(), "Ctrl+V"]);
   if (n && !atDrives) {
     items.push("-");
+    if (single?.d) {
+      const p = pane.join(single.n);
+      items.push(pane.isFav(p) ? ["star", "取消收藏", () => pane.removeFav(p)] : ["star", "添加到收藏", () => pane.addFav(p)]);
+    }
     items.push(["rename", "重命名", () => rename(pane), n !== 1, "F2"]);
     items.push(["link", "复制路径", () => navigator.clipboard.writeText(pane.selPaths().join("\n")).then(() => toast("已复制路径"))]);
     if (!pane.isPhone) items.push(["reveal", "在资源管理器中显示", () => call("local_reveal", { path: pane.selPaths()[0] })]);
@@ -867,10 +1100,15 @@ function showMenu(pane, x, y) {
   }
   if (!n && !atDrives) {
     items.push("-");
+    if (pane.path) items.push(pane.isFav(pane.path) ? ["star", "取消收藏当前文件夹", () => pane.removeFav(pane.path)] : ["star", "收藏当前文件夹", () => pane.addFav(pane.path)]);
     items.push(["newdir", "新建文件夹", () => newFolder(pane), !pane.ready(), "Ctrl+Shift+N"]);
     if (!pane.isPhone && pane.path) items.push(["reveal", "在资源管理器中打开", () => call("local_open", { path: pane.path })]);
     items.push(["refresh", "刷新", () => pane.load({ keepSel: true }), false, "F5"]);
   }
+  showItems(items, x, y);
+}
+
+function showItems(items, x, y) {
   const m = $("menu");
   m.innerHTML = items
     .map((it, i) => (it === "-" ? "<hr>" : `<button data-i="${i}" class="${it[5] ? "danger" : ""}" ${it[3] ? "disabled" : ""}>${ICONS[it[0]] || ""}${esc(it[1])}${it[4] ? `<kbd>${it[4]}</kbd>` : ""}</button>`))

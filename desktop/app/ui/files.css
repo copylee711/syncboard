@@ -57,13 +57,13 @@ body.fm { font-size: 13px; }
 
 /* ---- list ---- */
 .cols, .row-f { display: grid; grid-template-columns: minmax(0, 1fr) 132px 84px; align-items: center; column-gap: 12px; }
-.cols { padding: 0 14px; height: 30px; border-bottom: 1px solid var(--line); font-size: 12px; color: var(--muted); flex: none; }
+.cols { padding: 0 24px; height: 30px; border-bottom: 1px solid var(--line); font-size: 12px; color: var(--muted); flex: none; }
 .cols button { border: none; background: none; padding: 0; font: inherit; color: inherit; cursor: pointer; text-align: left; display: flex; align-items: center; gap: 4px; }
 .cols button:last-child { justify-content: flex-end; }
 .cols button:hover, .cols button.on { color: var(--text); }
 .cols button i { font-style: normal; font-size: 10px; }
 
-.list { flex: 1; min-height: 0; overflow-y: auto; padding: 4px 6px 64px; outline: none; }
+.list { position: relative; flex: 1; min-height: 0; overflow-y: auto; padding: 4px 16px 64px; outline: none; }
 .list::-webkit-scrollbar { width: 10px; }
 .list::-webkit-scrollbar-thumb { background: var(--line); border-radius: 5px; border: 3px solid var(--surface); }
 .row-f { height: 34px; padding: 0 8px; border-radius: 7px; cursor: default; content-visibility: auto; contain-intrinsic-size: auto 34px; }
@@ -166,3 +166,17 @@ body.dragging, body.dragging * { cursor: default !important; }
 .list.drop-target { box-shadow: inset 0 0 0 1.5px var(--ink); border-radius: 0 0 11px 11px; }
 .drag-ghost { position: fixed; z-index: 50; pointer-events: none; max-width: 260px; padding: 5px 10px; border-radius: 8px; background: var(--ink); color: var(--on-ink); font-size: 12px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; box-shadow: 0 6px 18px rgba(0,0,0,.2); }
 .drag-ghost[data-verb]:not([data-verb=""])::after { content: attr(data-verb); display: block; font-size: 11px; opacity: .75; }
+
+/* ---- favorites ---- */
+.place svg { width: 12px; height: 12px; stroke-width: 1.8; }
+.place.fav svg { fill: #e3b341; stroke: #c9962b; }
+.place.fav.on svg { fill: var(--on-ink); stroke: var(--on-ink); }
+.place.drop-target { background: var(--ink); color: var(--on-ink); border-color: var(--ink); }
+.place-sep { flex: none; width: 1px; height: 16px; align-self: center; background: var(--line); margin: 0 2px; }
+.tool.starred svg { fill: #e3b341; stroke: #c9962b; }
+
+/* ---- box selection ---- */
+.marquee { position: absolute; z-index: 2; pointer-events: none; border: 1px solid color-mix(in srgb, var(--ink) 55%, transparent); background: color-mix(in srgb, var(--ink) 8%, transparent); border-radius: 3px; }
+.place.lifting { position: relative; z-index: 3; box-shadow: 0 4px 14px rgba(0,0,0,.18); background: var(--surface); transition: none; }
+.place.insert-before { box-shadow: -3px 0 0 -1px var(--ink); }
+.places.insert-end::after { content: ""; flex: none; width: 2px; height: 18px; align-self: center; background: var(--ink); border-radius: 1px; }
