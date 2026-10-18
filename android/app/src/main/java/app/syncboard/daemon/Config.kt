@@ -46,6 +46,10 @@ class Settings(
     var hideAccessToast: Boolean = true,
     /** Put new screenshots on the phone and PC clipboards. */
     var copyScreenshots: Boolean = false,
+    /** Put new camera photos (DCIM/Camera) on the phone and PC clipboards. */
+    var copyCameraPhotos: Boolean = false,
+    /** Also new images in these folders (MediaStore relative paths, e.g. "Pictures/WeiXin"). */
+    var copyFolders: List<String> = emptyList(),
     /**
      * Switch developer options off once a PC has set this phone up over adb (the system
      * advises against leaving them on). The app switches them on briefly whenever the
@@ -58,6 +62,7 @@ class Settings(
         .put("autoAcceptFiles", autoAcceptFiles).put("paused", paused)
         .put("hideAccessToast", hideAccessToast).put("copyScreenshots", copyScreenshots)
         .put("autoDisableDevOptions", autoDisableDevOptions)
+        .put("copyCameraPhotos", copyCameraPhotos).put("copyFolders", JSONArray(copyFolders))
 
     fun update(o: JSONObject) {
         if (o.has("syncText")) syncText = o.getBoolean("syncText")
@@ -67,6 +72,8 @@ class Settings(
         if (o.has("hideAccessToast")) hideAccessToast = o.getBoolean("hideAccessToast")
         if (o.has("copyScreenshots")) copyScreenshots = o.getBoolean("copyScreenshots")
         if (o.has("autoDisableDevOptions")) autoDisableDevOptions = o.getBoolean("autoDisableDevOptions")
+        if (o.has("copyCameraPhotos")) copyCameraPhotos = o.getBoolean("copyCameraPhotos")
+        o.optJSONArray("copyFolders")?.let { a -> copyFolders = List(a.length()) { a.getString(it) }.distinct() }
     }
 }
 

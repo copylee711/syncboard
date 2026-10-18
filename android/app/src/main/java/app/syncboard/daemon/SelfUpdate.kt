@@ -16,13 +16,14 @@ object SelfUpdate {
     fun start(version: String, dir: File, emit: (JSONObject) -> Unit) {
         if (running) return
         running = true
-        fun event(stage: String, reason: String? = null) =
-            emit(JSONObject().put("event", "update").put("stage", stage).put("version", version).put("reason", reason))
+        fun event(stage: String, reason: String? = null, done: Long = 0, total: Long = 0) =
+            emit(JSONObject().put("event", "update").put("stage", stage).put("version", version).put("reason", reason)
+                .put("done", done).put("total", total))
         Thread({
             val apk = File(dir, "update.apk")
             try {
                 event("downloading")
-                Releases.downloadApk(version, apk)
+                Releases.downloadApk(version, apk) { done, total -> event("downloading", done = done, total = total) }
                 event("installing")
                 val p = ProcessBuilder("pm", "install", "-r", apk.path).redirectErrorStream(true).start()
                 val out = p.inputStream.bufferedReader().readText()

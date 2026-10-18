@@ -268,7 +268,12 @@ async fn check_update() -> Result<Value, String> {
 /// Downloads `version`, swaps it in for this exe and restarts into it.
 #[tauri::command]
 async fn install_update(app: AppHandle, version: String) -> Result<(), String> {
-    let exe = tauri::async_runtime::spawn_blocking(move || update::install(&version)).await.map_err(|e| e.to_string())??;
+    let ui = app.clone();
+    let exe = tauri::async_runtime::spawn_blocking(move || {
+        update::install(&version, |done, total| notify_ui(&ui, "updateProgress", json!({"done": done, "total": total})))
+    })
+    .await
+    .map_err(|e| e.to_string())??;
     update::relaunch_after_exit(&exe);
     app.exit(0);
     Ok(())
@@ -438,7 +443,7 @@ fn on_engine_event(app: &AppHandle, ev: Event) {
                     Ok(serial) => {
                         let r = adb::start_daemon(&adb, &serial);
                         eprintln!("[wake] start daemon on {serial}: {r:?}");
-                        let _ = std::process::Command::new(&adb).args(["disconnect", &serial]).output();
+                        adb::disconnect(&adb, &serial);
                     }
                     Err(e) => eprintln!("[wake] adb connect {addr} failed: {e}"),
                 }

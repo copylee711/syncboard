@@ -334,3 +334,7 @@ pub fn connect_wireless(adb: &Path, addr: &str) -> Result<String, String> {
     let out = run(adb, &["connect", addr])?;
     if out.contains("connected") { Ok(addr.to_string()) } else { Err(out.trim().to_string()) }
 }
+
+pub fn disconnect(adb: &Path, serial: &str) {
+    let _ = run(adb, &["disconnect", serial]);
+}

@@ -49,22 +49,31 @@ object Releases {
      * Downloads the APK for [version] into [into] and checks it against the release's
      * SHA256SUMS.txt. Blocking; throws with a message to show the user.
      */
-    fun downloadApk(version: String, into: File) {
+    fun downloadApk(version: String, into: File, onProgress: (done: Long, total: Long) -> Unit = { _, _ -> }) {
         require(version.matches(Regex("[0-9.]+"))) { "bad version" }
         val sums = open("$REPO/releases/download/v$version/SHA256SUMS.txt").use { it.readBytes().decodeToString() }
         val want = sums.lineSequence().map { it.trim().split(Regex("[ \t]+")) }
             .firstOrNull { it.size == 2 && it[1] == apkName(version) }?.get(0)?.lowercase()
             ?: error("发布中没有手机端安装包")
         val md = MessageDigest.getInstance("SHA-256")
-        open(apkUrl(version)).use { input ->
+        val conn = connect(apkUrl(version))
+        val total = conn.contentLengthLong
+        conn.inputStream.use { input ->
             into.outputStream().use { out ->
                 val buf = ByteArray(256 * 1024)
+                var done = 0L
+                var reported = 0L
+                onProgress(0, total)
                 while (true) {
                     val n = input.read(buf)
                     if (n < 0) break
                     md.update(buf, 0, n)
                     out.write(buf, 0, n)
+                    done += n
+                    val now = System.currentTimeMillis()
+                    if (now - reported >= 250) { reported = now; onProgress(done, total) }
                 }
+                onProgress(done, total)
             }
         }
         if (md.digest().joinToString("") { "%02x".format(it) } != want) {
@@ -73,8 +82,10 @@ object Releases {
         }
     }
 
-    private fun open(url: String) = (URL(url).openConnection() as HttpURLConnection).apply {
+    private fun connect(url: String) = (URL(url).openConnection() as HttpURLConnection).apply {
         connectTimeout = 15_000
         readTimeout = 30_000
-    }.inputStream
+    }
+
+    private fun open(url: String) = connect(url).inputStream
 }

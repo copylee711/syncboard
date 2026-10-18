@@ -427,6 +427,8 @@ private fun ServiceDown() {
         when {
             oneTap -> "SyncBoard 会临时打开无线调试，请电脑启动后台服务${if (AppPrefs.autoDisableDev(ctx)) "，完成后关闭开发者选项" else ""}。需要电脑上的 SyncBoard 正在运行，并和手机在同一网络。"
             known -> "手机重启后，后台同步服务会停止。SyncBoard 可以通过「无线调试」请电脑重新启动它，不需要数据线。"
+            Recovery.canToggleWifiDebugging(ctx) && !showSetup ->
+                "在电脑 SyncBoard 点「添加手机」进入第 2 步「扫码连接」，再点下面的「去扫码」，在打开的页面点「使用二维码配对设备」扫码。无线调试会自动打开${if (AppPrefs.autoDisableDev(ctx)) "，完成后自动关闭" else ""}。"
             else -> "SyncBoard 的后台服务需要电脑帮忙启动一次：在电脑上打开 SyncBoard，点「添加手机」进入第 2 步「扫码连接」，再按下面的步骤操作，其余步骤会自动完成。"
         },
         fontSize = 14.sp, color = p.muted, lineHeight = 21.sp, modifier = Modifier.padding(top = 6.dp),
@@ -440,10 +442,53 @@ private fun ServiceDown() {
     if (oneTap && !showSetup) {
         // The checklist is only for pairing again; keep it out of the way.
         TextButton({ showSetup = true }, modifier = Modifier.padding(top = 12.dp)) { Text("重新配对 ›", color = p.muted) }
+    } else if (!known && Recovery.canToggleWifiDebugging(ctx) && !showSetup) {
+        // Set up over adb before (then removed from the PC): the app flips the debugging
+        // switches itself, so only the scan is left.
+        QuickRepair(onMore = { showSetup = true })
     } else {
         SectionLabel(if (known) "或者重新添加" else "手机上的准备")
         PhoneSetupSteps()
     }
+}
+
+/**
+ * Adding the phone again when the app may still write secure settings: turn developer
+ * options and wireless debugging on directly and go straight to the QR scanner page.
+ */
+@Composable
+private fun QuickRepair(onMore: () -> Unit) {
+    val p = LocalPalette.current
+    val ctx = LocalContext.current
+    var bg by remember { mutableStateOf(DevOptions.backgroundAllowed(ctx)) }
+    var error by remember { mutableStateOf<String?>(null) }
+    androidx.lifecycle.compose.LifecycleResumeEffect(Unit) {
+        bg = DevOptions.backgroundAllowed(ctx)
+        DevOptions.dismissGuide(ctx)
+        onPauseOrDispose {}
+    }
+    if (!bg) {
+        Spacer(Modifier.height(16.dp))
+        Group {
+            StepRow(
+                "允许后台运行",
+                if (DevOptions.isVivo()) "扫码时 SyncBoard 要在后台告诉电脑配对端口：在「后台耗电管理」里选「允许后台耗电」"
+                else "扫码时 SyncBoard 要在后台告诉电脑配对端口",
+                false, action = "去设置",
+            ) { DevOptions.openBackgroundSetting(ctx) }
+        }
+    }
+    Spacer(Modifier.height(20.dp))
+    InkButton("去扫码", Modifier.fillMaxWidth()) {
+        error = null
+        if (DevOptions.enableDeveloperOptions(ctx) && DevOptions.enableWirelessDebugging(ctx)) {
+            DevOptions.openWirelessDebuggingPage(ctx)
+        } else {
+            error = "无法自动打开无线调试，请按「其他方式」里的步骤手动打开"
+        }
+    }
+    error?.let { Text(it, color = p.danger, fontSize = 13.sp, modifier = Modifier.padding(top = 12.dp)) }
+    TextButton(onMore, modifier = Modifier.padding(top = 12.dp)) { Text("其他方式（数据线、手动设置）›", color = p.muted) }
 }
 
 /**
@@ -607,6 +652,7 @@ private fun SettingsScreen(
     var autoRecover by remember { mutableStateOf(AppPrefs.autoRecover(ctx)) }
     var autoDisableDev by remember { mutableStateOf(AppPrefs.autoDisableDev(ctx)) }
     var confirmStop by remember { mutableStateOf(false) }
+    var pickFolders by remember { mutableStateOf(false) }
 
     Column(
         Modifier.fillMaxSize().statusBarsPadding().navigationBarsPadding().verticalScroll(rememberScrollState())
@@ -626,6 +672,16 @@ private fun SettingsScreen(
                 Divider()
                 ToggleRow("截屏后自动复制", s.optBoolean("copyScreenshots"),
                     "新截图会放进手机和电脑剪贴板，可直接粘贴") { set("copyScreenshots", it) }
+                Divider()
+                ToggleRow("拍照后自动复制", s.optBoolean("copyCameraPhotos"),
+                    "相机拍的新照片（DCIM/Camera）会放进手机和电脑剪贴板") { set("copyCameraPhotos", it) }
+                Divider()
+                val folders = s.optJSONArray("copyFolders")?.let { a -> List(a.length()) { a.getString(it) } }.orEmpty()
+                ActionRow(
+                    "自动复制的文件夹",
+                    if (folders.isEmpty()) "未选择。选中文件夹里的新图片也会自动复制"
+                    else folders.joinToString("、") { it.substringAfterLast('/') },
+                ) { pickFolders = true }
                 Divider()
                 ToggleRow("自动接收文件", s.optBoolean("autoAcceptFiles"), "保存到 下载/SyncBoard") { set("autoAcceptFiles", it) }
                 Divider()
@@ -674,6 +730,14 @@ private fun SettingsScreen(
         Spacer(Modifier.height(24.dp))
     }
 
+    if (pickFolders && s != null) {
+        val chosen = s.optJSONArray("copyFolders")?.let { a -> List(a.length()) { a.getString(it) } }.orEmpty()
+        FolderPicker(client, chosen, onDismiss = { pickFolders = false }) { picked ->
+            pickFolders = false
+            client.send(JSONObject().put("cmd", "settings").put("settings", JSONObject().put("copyFolders", org.json.JSONArray(picked))))
+        }
+    }
+
     if (confirmStop) {
         AlertDialog(
             onDismissRequest = { confirmStop = false },
@@ -684,6 +748,57 @@ private fun SettingsScreen(
             containerColor = p.surface,
         )
     }
+}
+
+/** Picks folders whose new images are copied, from the folders the phone service finds images in. */
+@Composable
+private fun FolderPicker(client: DaemonClient, chosen: List<String>, onDismiss: () -> Unit, onDone: (List<String>) -> Unit) {
+    val p = LocalPalette.current
+    var folders by remember { mutableStateOf<List<Pair<String, Int>>?>(null) }
+    val picked = remember { mutableStateListOf<String>().apply { addAll(chosen) } }
+    LaunchedEffect(client) {
+        client.cmd("imageFolders")
+        client.events.collect { ev ->
+            if (ev.optString("event") != "imageFolders") return@collect
+            val a = ev.optJSONArray("folders") ?: return@collect
+            folders = List(a.length()) { a.getJSONObject(it).let { o -> o.optString("path") to o.optInt("count") } }
+        }
+    }
+    AlertDialog(
+        onDismissRequest = onDismiss,
+        title = { Text("自动复制的文件夹") },
+        text = {
+            val list = folders
+            Column(Modifier.verticalScroll(rememberScrollState())) {
+                Text("选中文件夹里新增的图片会自动放进手机和电脑剪贴板。", color = p.muted, fontSize = 13.sp,
+                    modifier = Modifier.padding(bottom = 8.dp))
+                when {
+                    list == null -> Text("正在读取…", color = p.muted)
+                    list.isEmpty() && picked.isEmpty() -> Text("没有找到图片文件夹", color = p.muted)
+                }
+                // Keep chosen folders listed even when they hold no images right now.
+                val rows = (list.orEmpty() + picked.filter { c -> list.orEmpty().none { it.first == c } }.map { it to 0 })
+                rows.forEach { (path, n) ->
+                    val on = path in picked
+                    Row(
+                        Modifier.fillMaxWidth().clip(RoundedCornerShape(8.dp))
+                            .clickable { if (on) picked.remove(path) else picked.add(path) }.padding(vertical = 4.dp),
+                        verticalAlignment = Alignment.CenterVertically,
+                    ) {
+                        androidx.compose.material3.Checkbox(on, { if (on) picked.remove(path) else picked.add(path) },
+                            colors = androidx.compose.material3.CheckboxDefaults.colors(checkedColor = p.ink, checkmarkColor = p.bg))
+                        Column(Modifier.weight(1f)) {
+                            Text(path.substringAfterLast('/'), fontSize = 15.sp, maxLines = 1, overflow = TextOverflow.Ellipsis)
+                            Text(if (n > 0) "$path · $n 张" else path, fontSize = 12.sp, color = p.muted, maxLines = 1, overflow = TextOverflow.Ellipsis)
+                        }
+                    }
+                }
+            }
+        },
+        confirmButton = { TextButton({ onDone(picked.toList()) }) { Text("完成", color = p.ink) } },
+        dismissButton = { TextButton(onDismiss) { Text("取消", color = p.muted) } },
+        containerColor = p.surface,
+    )
 }
 
 /** Version row with "检查更新": installs through the daemon, or opens the download otherwise. */
@@ -697,6 +812,14 @@ private fun UpdateRow(client: DaemonClient, running: Boolean) {
     var busy by remember { mutableStateOf(false) }
     var confirm by remember { mutableStateOf(false) }
     var heardBack by remember { mutableStateOf(false) }
+    /** Download progress 0..1, -1 while the size is unknown, null when not downloading. */
+    var progress by remember { mutableStateOf<Float?>(null) }
+    fun showProgress(v: String, done: Long, total: Long) {
+        progress = if (total > 0) (done.toFloat() / total).coerceIn(0f, 1f) else -1f
+        val mb = "%.1f".format(done / 1048576f)
+        status = if (total > 0) "正在下载 v$v… ${(done * 100 / total)}%（$mb / ${"%.1f".format(total / 1048576f)} MB）"
+        else "正在下载 v$v… $mb MB"
+    }
     val scope = androidx.compose.runtime.rememberCoroutineScope()
 
     // Without the phone service: download here (checksum-verified) and hand the APK to the
@@ -709,9 +832,10 @@ private fun UpdateRow(client: DaemonClient, running: Boolean) {
             val r = runCatching {
                 apk.parentFile?.mkdirs()
                 apk.parentFile?.listFiles()?.forEach { it.delete() }
-                app.syncboard.ipc.Releases.downloadApk(v, apk)
+                app.syncboard.ipc.Releases.downloadApk(v, apk) { done, total -> showProgress(v, done, total) }
             }
             busy = false
+            progress = null
             r.onFailure { status = "下载失败：${it.message}" }.onSuccess {
                 status = "下载完成，请在系统安装界面点「安装」"
                 val uri = androidx.core.content.FileProvider.getUriForFile(ctx, "app.syncboard.updates", apk)
@@ -728,10 +852,10 @@ private fun UpdateRow(client: DaemonClient, running: Boolean) {
             if (ev.optString("event") != "update") return@collect
             heardBack = true
             when (ev.optString("stage")) {
-                "downloading" -> status = "正在下载 v${ev.optString("version")}…"
-                "installing" -> status = "正在安装…（如手机弹出确认，请点「允许」）"
-                "done" -> status = "已更新，正在重启 SyncBoard"
-                "failed" -> { busy = false; status = ev.optString("reason") }
+                "downloading" -> showProgress(ev.optString("version"), ev.optLong("done"), ev.optLong("total"))
+                "installing" -> { progress = null; status = "正在安装…（如手机弹出确认，请点「允许」）" }
+                "done" -> { progress = null; status = "已更新，正在重启 SyncBoard" }
+                "failed" -> { busy = false; progress = null; status = ev.optString("reason") }
             }
         }
     }
@@ -740,6 +864,15 @@ private fun UpdateRow(client: DaemonClient, running: Boolean) {
         Column(Modifier.weight(1f)) {
             Text("SyncBoard $current", fontSize = 15.sp)
             Text(status ?: latest?.let { "有新版本 v$it" } ?: "从 GitHub 发布页检查新版本", fontSize = 12.sp, color = p.muted, lineHeight = 16.sp)
+            progress?.let { f ->
+                val mod = Modifier.fillMaxWidth().padding(top = 6.dp).height(3.dp).clip(RoundedCornerShape(2.dp))
+                if (f < 0) {
+                    androidx.compose.material3.LinearProgressIndicator(mod, color = p.ink, trackColor = p.line)
+                } else {
+                    androidx.compose.material3.LinearProgressIndicator({ f }, mod, color = p.ink, trackColor = p.line,
+                        gapSize = 0.dp, drawStopIndicator = {})
+                }
+            }
         }
         TextButton(
             onClick = {

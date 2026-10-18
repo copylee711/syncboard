@@ -127,6 +127,7 @@ label.row:hover { background: color-mix(in srgb, var(--hover) 50%, transparent);
 .item .sub .dot { width: 6px; height: 6px; box-shadow: none; }
 .empty { padding: 16px 14px; color: var(--muted); font-size: 13px; }
 .bar { height: 3px; border-radius: 2px; background: var(--line); margin-top: 7px; overflow: hidden; }
+.update-bar { margin: 0 14px 11px; }
 .bar > i { display: block; height: 100%; background: var(--ink); transition: width .2s; }
 .hint { margin: 0; padding: 11px 14px; color: var(--muted); font-size: 12.5px; }
 

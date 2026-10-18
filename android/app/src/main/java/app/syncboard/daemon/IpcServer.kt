@@ -23,7 +23,7 @@ import java.util.concurrent.CopyOnWriteArrayList
  * 127.0.0.1:[PORT]. Callers are identified by the uid that owns their socket in
  * /proc/net/tcp*: only the SyncBoard app and shell/root may talk to the daemon.
  *
- * Requests: {"cmd": status|pairQr|pairCode|unpair|settings|discover|reconnect|wakeInfo|selfUpdate|stop, ...}
+ * Requests: {"cmd": status|pairQr|pairCode|unpair|settings|discover|reconnect|wakeInfo|imageFolders|selfUpdate|stop, ...}
  * Two connection types carry raw bytes after their first frame:
  *  - {"cmd":"sendFile",name,size,pc?} then `size` bytes, streamed to the PC;
  *  - {"cmd":"getClip",name} answered with {"size"} then the clipboard image bytes;
@@ -123,6 +123,12 @@ class IpcServer private constructor(private val server: ServerSocket, private va
             "discover" -> Thread {
                 val found = engine.discover(1500)
                 runCatching { writePlain(out, JSONObject().put("event", "discovered").put("pcs", JSONArray(found))) }
+            }.start()
+            "imageFolders" -> Thread {
+                val folders = JSONArray(MediaWatcher.imageFolders(bridge.resolver).map { (path, n) ->
+                    JSONObject().put("path", path).put("count", n)
+                })
+                runCatching { writePlain(out, JSONObject().put("event", "imageFolders").put("folders", folders)) }
             }.start()
             "selfUpdate" -> SelfUpdate.start(req.getString("version"), Main.stateDir) { broadcast(it) }
             "stop" -> {

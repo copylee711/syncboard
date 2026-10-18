@@ -89,7 +89,12 @@ object Recovery {
             val offAfter = AppPrefs.autoDisableDev(ctx) && canToggleWifiDebugging(ctx)
             if (weEnabled || weEnabledDev || offAfter) Thread.sleep(1500)
             if (weEnabled || offAfter) Settings.Global.putInt(ctx.contentResolver, ADB_WIFI, 0)
-            if (weEnabledDev || offAfter) Settings.Global.putInt(ctx.contentResolver, Settings.Global.DEVELOPMENT_SETTINGS_ENABLED, 0)
+            if (weEnabledDev || offAfter) {
+                Settings.Global.putInt(ctx.contentResolver, Settings.Global.DEVELOPMENT_SETTINGS_ENABLED, 0)
+                if (offAfter && android.os.Build.MANUFACTURER.equals("vivo", ignoreCase = true)) {
+                    runCatching { Settings.Global.putInt(ctx.contentResolver, "vivo_development_show", 0) }
+                }
+            }
         }
     }
 

@@ -53,17 +53,22 @@ class Engine(
     private val waiters = ConcurrentHashMap<String, Waiter>()
     private val seen = ArrayDeque<String>()
 
-    private val screenshots = ScreenshotWatcher(bridge.resolver) { f ->
-        val png = ClipboardBridge.toPng(f.readBytes(), MAX_IMAGE) ?: return@ScreenshotWatcher
-        // Paste on the phone too (our own clip is not re-sent). The screenshot's MediaStore
-        // URI works without the app running; it may take a moment to be indexed.
-        val media = (0 until 5).firstNotNullOfOrNull { i ->
+    private val media = MediaWatcher(bridge.resolver) { f, uri, mime ->
+        val png = ClipboardBridge.toPng(f.readBytes(), MAX_IMAGE) ?: return@MediaWatcher
+        // Paste on the phone too (our own clip is not re-sent). The image's MediaStore URI
+        // works without the app running; when inotify saw it first it may take a moment
+        // to be indexed.
+        val known = uri?.let { it to (mime ?: "image/png") } ?: (0 until 5).firstNotNullOfOrNull { i ->
             if (i > 0) Thread.sleep(300)
             bridge.mediaUriOf(f.path)
         }
-        if (media != null) bridge.setMediaImage(media.first, media.second) else bridge.setImage(png)
+        if (known != null) bridge.setMediaImage(known.first, known.second) else bridge.setImage(png)
         val n = pushImage(png)
-        Log.i(TAG, "screenshot copied (${png.size} bytes, $n PC(s))")
+        Log.i(TAG, "new image copied (${png.size} bytes, $n PC(s))")
+    }
+
+    private fun applyMediaSettings() = with(config.settings) {
+        media.configure(MediaWatcher.Targets(copyScreenshots, copyCameraPhotos, copyFolders.toList()))
     }
 
     /** Hash of the clipboard content both sides agree on (echo suppression). */
@@ -73,7 +78,7 @@ class Engine(
         config.pcs.forEach { ensureLoop(it.id) }
         bridge.listen { io.execute { onLocalChange() } }
         applyToastSetting()
-        screenshots.setEnabled(config.settings.copyScreenshots)
+        applyMediaSettings()
         timer.scheduleWithFixedDelay({
             sessions.values.forEach { s -> io.execute { runCatching { s.writer.write(Message.of("t" to "ping")) } } }
         }, 30, 30, TimeUnit.SECONDS)
@@ -108,11 +113,10 @@ class Engine(
 
     fun updateSettings(o: JSONObject) {
         val before = config.settings.hideAccessToast
-        val shotsBefore = config.settings.copyScreenshots
         config.settings.update(o)
         config.save()
         if (before != config.settings.hideAccessToast) applyToastSetting()
-        if (shotsBefore != config.settings.copyScreenshots) screenshots.setEnabled(config.settings.copyScreenshots)
+        applyMediaSettings()
         pushStatus()
     }
 
@@ -120,7 +124,11 @@ class Engine(
         // Let the PC finish with adb first; the daemon itself doesn't need it.
         Thread.sleep(3000)
         Log.i(TAG, "paired over adb, switching developer options off")
-        for (key in listOf("adb_wifi_enabled", "development_settings_enabled")) {
+        // On vivo also hide the entry again (vivo_development_show), as before the build-number
+        // taps; the app can still switch them on for a restart.
+        val keys = listOf("adb_wifi_enabled", "development_settings_enabled") +
+            if (android.os.Build.MANUFACTURER.equals("vivo", ignoreCase = true)) listOf("vivo_development_show") else emptyList()
+        for (key in keys) {
             runCatching { ProcessBuilder("settings", "put", "global", key, "0").start().waitFor() }
         }
     }.start()

@@ -251,10 +251,13 @@ $("updateBtn").onclick = async () => {
       if (!confirm(`发现新版本 v${r.latest}（当前 v${r.current}）。现在下载并重启 SyncBoard？`)) return;
     }
     btn.textContent = "正在下载…";
+    $("updateBar").firstElementChild.style.width = "0%";
+    $("updateBar").hidden = false;
     await call("install_update", { version: available });
   } catch {
     // call() already showed the error
   } finally {
+    $("updateBar").hidden = true;
     btn.disabled = false;
     btn.textContent = available ? `更新到 v${available}` : "检查更新";
     btn.classList.toggle("ink", !!available);
@@ -298,6 +301,17 @@ $("transfers").onclick = (e) => e.target.closest("[data-open]") && call("open_do
 listen("state", (e) => {
   state = e.payload;
   render();
+});
+
+listen("updateProgress", (e) => {
+  const { done, total } = e.payload;
+  const mb = (n) => (n / 1048576).toFixed(1);
+  if (total > 0) {
+    $("updateBar").firstElementChild.style.width = `${Math.min(100, (done * 100) / total)}%`;
+    $("updateBtn").textContent = `正在下载 ${Math.floor((done * 100) / total)}%`;
+  } else {
+    $("updateBtn").textContent = `正在下载 ${mb(done)} MB`;
+  }
 });
 
 listen("toast", (e) => toast(e.payload.text, e.payload.kind));

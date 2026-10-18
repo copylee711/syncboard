@@ -67,7 +67,7 @@ pub fn cleanup() {
 
 /// Downloads `version`, checks it against the release's SHA256SUMS.txt and swaps it in
 /// for the running exe (Windows allows renaming a running exe). The caller restarts.
-pub fn install(version: &str) -> Result<PathBuf, String> {
+pub fn install(version: &str, progress: impl Fn(u64, u64)) -> Result<PathBuf, String> {
     let name = format!("SyncBoard-{version}-windows-x64.exe");
     let base = format!("{REPO}/releases/download/v{version}");
     let sums = curl(&["-L", "-m", "30", &format!("{base}/SHA256SUMS.txt")]).map_err(|e| format!("下载校验文件失败：{e}"))?;
@@ -78,8 +78,7 @@ pub fn install(version: &str) -> Result<PathBuf, String> {
 
     let tmp = std::env::temp_dir().join(format!("{name}.part"));
     let _ = std::fs::remove_file(&tmp);
-    curl(&["-L", "--retry", "2", "-o", &tmp.to_string_lossy(), &format!("{base}/{name}")])
-        .map_err(|e| format!("下载失败：{e}"))?;
+    download(&format!("{base}/{name}"), &tmp, progress).map_err(|e| format!("下载失败：{e}"))?;
     let bytes = std::fs::read(&tmp).map_err(|e| e.to_string())?;
     if syncboard_core::crypto::sha256_hex(&bytes) != want {
         let _ = std::fs::remove_file(&tmp);
@@ -97,6 +96,48 @@ pub fn install(version: &str) -> Result<PathBuf, String> {
     }
     let _ = std::fs::remove_file(&tmp);
     Ok(exe)
+}
+
+/// Size of what `url` finally redirects to (0 when unknown).
+fn content_length(url: &str) -> u64 {
+    let Ok(head) = curl(&["-I", "-L", "-m", "20", url]) else { return 0 };
+    String::from_utf8_lossy(&head)
+        .lines()
+        .filter_map(|l| {
+            let (k, v) = l.split_once(':')?;
+            k.trim().eq_ignore_ascii_case("content-length").then(|| v.trim().parse::<u64>().ok())?
+        })
+        .last()
+        .unwrap_or(0)
+}
+
+/// Downloads `url` into `to`, reporting (bytes so far, total) while curl runs.
+fn download(url: &str, to: &Path, progress: impl Fn(u64, u64)) -> Result<(), String> {
+    let total = content_length(url);
+    let mut child = Command::new("curl.exe")
+        .args(["-fsSL", "--connect-timeout", "15", "--retry", "2", "-o"])
+        .arg(to)
+        .arg(url)
+        .stdout(std::process::Stdio::null())
+        .stderr(std::process::Stdio::piped())
+        .creation_flags(CREATE_NO_WINDOW)
+        .spawn()
+        .map_err(|e| e.to_string())?;
+    loop {
+        let done = std::fs::metadata(to).map(|m| m.len()).unwrap_or(0);
+        progress(done, total);
+        if let Some(status) = child.try_wait().map_err(|e| e.to_string())? {
+            if status.success() {
+                return Ok(());
+            }
+            let mut err = String::new();
+            if let Some(mut e) = child.stderr.take() {
+                let _ = std::io::Read::read_to_string(&mut e, &mut err);
+            }
+            return Err(err.trim().to_string());
+        }
+        std::thread::sleep(std::time::Duration::from_millis(250));
+    }
 }
 
 /// Starts `exe` once this process has exited (the single-instance lock would otherwise
