@@ -81,11 +81,12 @@ function render() {
       .map(
         (p) => `<div class="item${p.connected && online.length > 1 ? " pickable" : ""}${p.id === phoneStatus?.id && online.length > 1 ? " picked" : ""}" data-pick="${esc(p.id)}">
           <div class="meta">
-            <div class="name">${esc(p.name)}</div>
+            <div class="name">${esc(p.name)}${p.alias ? `<span class="model">${esc(p.model)}</span>` : ""}</div>
             <div class="sub"><span class="dot ${p.connected ? "on" : ""}"></span>${p.connected ? "在线" : p.keyMismatch ? "配对信息不一致，请取消配对后重新扫码" : "离线"}${p.addr && !(p.keyMismatch && !p.connected) ? " · " + esc(p.addr) : ""}</div>
           </div>
           ${p.connected ? `<button class="btn small" data-send="${esc(p.id)}">发送文件</button>
           <button class="icon-btn" title="停止手机服务" data-stop="${esc(p.id)}" data-name="${esc(p.name)}"><svg viewBox="0 0 24 24" style="width:15px;height:15px"><path d="M12 3v8M6.3 6.8a8 8 0 1011.4 0"/></svg></button>` : ""}
+          <button class="icon-btn" title="备注" data-alias="${esc(p.id)}"><svg viewBox="0 0 24 24" style="width:15px;height:15px"><path d="M4 20h4L19 9l-4-4L4 16v4zM13.5 6.5l4 4"/></svg></button>
           <button class="icon-btn" title="取消配对" data-unpair="${esc(p.id)}" data-name="${esc(p.name)}"><svg viewBox="0 0 12 12"><path d="M2.5 2.5l7 7m0-7l-7 7"/></svg></button>
         </div>`
       )
@@ -241,6 +242,7 @@ $("acceptBtn").onclick = () => answer(true);
 $("rejectBtn").onclick = () => answer(false);
 $("sendBtn").onclick = () => call("pick_and_send", { peer: null });
 $("folderBtn2").onclick = () => call("open_downloads");
+$("downloadPick").onclick = () => call("pick_download_dir");
 $("filesBtn").onclick = () => call("open_files");
 $("syncToggle").onchange = (e) => call("set_paused", { paused: !e.target.checked, minutes: null });
 $("autostart").onchange = (e) => call("set_autostart", { on: e.target.checked }).catch(refresh);
@@ -311,6 +313,8 @@ $("peers").onclick = async (e) => {
   if (stop && confirm(`停止「${stop.dataset.name}」上的 SyncBoard 服务？之后需要在手机上或用数据线重新启动。`)) {
     return call("stop_phone_service", { id: stop.dataset.stop });
   }
+  const al = e.target.closest("[data-alias]");
+  if (al) return openAlias(state.peers.find((p) => p.id === al.dataset.alias));
   const un = e.target.closest("[data-unpair]");
   if (un && confirm(`取消与「${un.dataset.name}」的配对？之后需要重新扫码。`)) {
     await call("unpair", { id: un.dataset.unpair });
@@ -530,6 +534,33 @@ async function refreshHistory() {
   const more = $("historyMore");
   if (more) more.onclick = () => ((historyAll = !historyAll), refreshHistory());
 }
+// Keeps transfers still running.
+$("transfersClear").onclick = async () => {
+  await call("transfers_clear");
+  state.transfers = state.transfers.filter((t) => t.type === "fileProgress");
+  renderTransfers();
+};
+let aliasPeer = null;
+function openAlias(p) {
+  if (!p) return;
+  aliasPeer = p;
+  $("aliasInput").value = p.alias || "";
+  $("aliasInput").placeholder = p.model;
+  $("aliasHint").textContent = `型号：${p.model}。留空则显示型号。`;
+  $("aliasSheet").hidden = false;
+  setTimeout(() => $("aliasInput").select());
+}
+$("aliasForm").onsubmit = async (e) => {
+  e.preventDefault();
+  $("aliasSheet").hidden = true;
+  if (aliasPeer) await call("set_alias", { id: aliasPeer.id, alias: $("aliasInput").value });
+};
+$("aliasCancel").onclick = () => {
+  $("aliasSheet").hidden = true;
+};
+$("aliasSheet").onclick = (e) => {
+  if (e.target.id === "aliasSheet") $("aliasSheet").hidden = true;
+};
 $("historyClear").onclick = async () => {
   await call("clip_history_clear");
   refreshHistory();

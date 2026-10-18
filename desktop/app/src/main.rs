@@ -44,10 +44,10 @@ struct App {
 type St<'a> = tauri::State<'a, App>;
 
 impl App {
-    /// Whether the file manager's queue is waiting on the engine transfer `id`
-    /// (those stay out of the main window's transfer list).
+    /// Whether the file manager started the engine transfer `id` (its queue, or opening a
+    /// phone file); those stay out of the main window's transfer list.
     fn queue_owns(&self, id: &str) -> bool {
-        self.queue.owns(id)
+        self.queue.owns(id) || self.engine.is_managed(id)
     }
 }
 
@@ -91,7 +91,7 @@ fn state_json(st: &App) -> Value {
         .into_iter()
         .map(|p| {
             let c = connected.iter().find(|(id, ..)| *id == p.id);
-            json!({"id": p.id, "name": p.name, "platform": p.platform,
+            json!({"id": p.id, "name": p.display_name(), "model": p.name, "alias": p.alias, "platform": p.platform,
                    "connected": c.is_some(), "addr": c.map(|c| c.2.clone()).or(p.last_addr),
                    "keyMismatch": st.engine.key_mismatch(&p.id)})
         })
@@ -306,6 +306,20 @@ fn clip_history_clear(st: St) {
 }
 
 #[tauri::command]
+fn set_alias(app: AppHandle, st: St, id: String, alias: String) -> Result<(), String> {
+    st.engine.set_alias(&id, &alias).map_err(|e| e.to_string())?;
+    update_tray(&app);
+    notify_ui(&app, "state", state_json(&st));
+    Ok(())
+}
+
+/// Forgets finished transfers; running ones stay.
+#[tauri::command]
+fn transfers_clear(st: St) {
+    st.transfers.lock().unwrap().retain(|t| t["type"] == "fileProgress");
+}
+
+#[tauri::command]
 fn unpair(st: St, id: String) -> Result<(), String> {
     st.engine.unpair(&id).map_err(|e| e.to_string())
 }
@@ -383,6 +397,25 @@ async fn send_files(engine: &Arc<Engine>, peer: Option<String>, paths: Vec<PathB
         }
     }
     Ok(())
+}
+
+/// Lets the user choose where received files go.
+#[tauri::command]
+fn pick_download_dir(app: AppHandle, st: St) {
+    let cur = st.engine.with_store(|s| s.download_dir());
+    let a = app.clone();
+    app.dialog().file().set_title("选择接收文件的位置").set_directory(cur).pick_folder(move |dir| {
+        let Some(dir) = dir.and_then(|d| d.into_path().ok()) else { return };
+        let st = a.state::<App>();
+        let r = st.engine.with_store(|s| {
+            s.config.settings.download_dir = Some(dir);
+            s.save()
+        });
+        match r {
+            Ok(()) => notify_ui(&a, "state", state_json(&st)),
+            Err(e) => notify_ui(&a, "toast", json!({"kind": "error", "text": e.to_string()})),
+        }
+    });
 }
 
 fn pick_files(app: AppHandle, peer: Option<String>) {
@@ -654,7 +687,7 @@ fn main() {
             files::open_files, files::local_places, files::local_list, files::local_mkdir, files::local_rename,
             files::local_delete, files::local_open, files::local_reveal, files::local_paste, files::phone_fs,
             files::phone_list, files::phone_thumb, files::phone_open, files::queue_state, files::queue_add,
-            files::queue_cancel, files::queue_clear, clip_history, clip_recopy, clip_history_clear
+            files::queue_cancel, files::queue_clear, clip_history, clip_recopy, clip_history_clear, transfers_clear, set_alias, pick_download_dir
         ])
         .setup(move |app| {
             let handle = app.handle().clone();

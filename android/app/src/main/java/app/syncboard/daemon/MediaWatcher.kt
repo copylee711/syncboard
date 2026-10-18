@@ -52,7 +52,7 @@ class MediaWatcher(
         targets = t
         observers.forEach { it.stopWatching() }
         observers.clear()
-        mediaObserver?.let { runCatching { resolver.unregisterContentObserver(it) } }
+        mediaObserver?.let { Observers.unregister(it) }
         mediaObserver = null
         poll?.cancel(false)
         poll = null
@@ -84,12 +84,11 @@ class MediaWatcher(
                 worker.schedule({ scan() }, 300, TimeUnit.MILLISECONDS)
             }
         }
-        val registered = runCatching {
-            resolver.registerContentObserver(MediaStore.Images.Media.EXTERNAL_CONTENT_URI, true, obs)
-        }.onFailure { Log.w(TAG, "MediaStore observer failed, polling instead", it) }.isSuccess
+        // Android 16 refuses observers from this daemon; then a cheap query (newer ids only)
+        // every 1.5 s stands in. Otherwise it is a slow safety net for writers that don't notify.
+        val registered = Observers.register(MediaStore.Images.Media.EXTERNAL_CONTENT_URI, true, obs)
         if (registered) mediaObserver = obs
-        // A slow safety net either way, in case a writer doesn't notify.
-        poll = worker.scheduleWithFixedDelay({ scan() }, 3, if (registered) 10 else 2, TimeUnit.SECONDS)
+        poll = worker.scheduleWithFixedDelay({ scan() }, 1500, if (registered) 10_000 else 1500, TimeUnit.MILLISECONDS)
         Log.i(TAG, "watching new images: $t (observer ${if (registered) "on" else "off"})")
     }
 
@@ -103,30 +102,45 @@ class MediaWatcher(
             ?.use { c -> if (c.moveToFirst()) c.getLong(0) else 0L } ?: 0L
     }.onFailure { Log.w(TAG, "MediaStore max id failed", it) }.getOrDefault(0L)
 
+    private val power by lazy { runCatching { ShellContext.init().getSystemService(android.os.PowerManager::class.java) }.getOrNull() }
+    /** Images MediaStore lists but whose file isn't readable yet: id → first seen (ms). */
+    private val notReady = HashMap<Long, Long>()
+
     /** Handles images added since the last scan. Runs on [worker]. */
     private fun scan() {
         val t = targets
         if (!t.any || lastId < 0) return
+        // No screenshots or photos are taken with the screen off; they are picked up once it is on.
+        if (runCatching { power?.isInteractive }.getOrNull() == false) return
         val uri = MediaStore.Images.Media.EXTERNAL_CONTENT_URI
         @Suppress("DEPRECATION")
         val cols = arrayOf(BaseColumns._ID, MediaStore.MediaColumns.DATA, MediaStore.MediaColumns.RELATIVE_PATH,
-            MediaStore.MediaColumns.IS_PENDING, MediaStore.MediaColumns.MIME_TYPE)
+            MediaStore.MediaColumns.IS_PENDING, MediaStore.MediaColumns.MIME_TYPE, MediaStore.MediaColumns.SIZE)
         val rows = runCatching {
             resolver.query(uri, cols, "${BaseColumns._ID}>?", arrayOf(lastId.toString()), "${BaseColumns._ID} ASC")?.use { c ->
-                buildList { while (c.moveToNext()) add(Row(c.getLong(0), c.getString(1), c.getString(2), c.getInt(3) == 1, c.getString(4))) }
+                buildList { while (c.moveToNext()) add(Row(c.getLong(0), c.getString(1), c.getString(2), c.getInt(3) == 1, c.getString(4), c.getLong(5))) }
             }.orEmpty()
         }.onFailure { Log.w(TAG, "MediaStore scan failed", it) }.getOrDefault(emptyList())
-        // Stop short of an image still being written; it is looked at again once published.
-        val firstPending = rows.firstOrNull { it.pending }?.id
+        // Stop short of an image still being written (pending, or published before its file
+        // is complete, as some cameras do); it is looked at again on the next scans.
+        val now = System.currentTimeMillis()
+        var stop = false
         for (r in rows) {
-            if (r.pending) continue
-            if (firstPending == null || r.id < firstPending) lastId = r.id
-            if (r.data == null || !wanted(t, r.relPath)) continue
-            handle(File(r.data), android.content.ContentUris.withAppendedId(uri, r.id), r.mime)
+            val want = !r.pending && r.data != null && wanted(t, r.relPath)
+            val f = r.data?.let(::File)
+            val waiting = (r.pending || (want && !ready(f!!, r.size))) && now - notReady.getOrPut(r.id) { now } < GIVE_UP_MS
+            if (waiting) { stop = true; continue }
+            notReady.remove(r.id)
+            if (!stop) lastId = r.id
+            if (want) handle(f!!, android.content.ContentUris.withAppendedId(uri, r.id), r.mime)
         }
+        if (notReady.size > 50) notReady.clear()
     }
 
-    private class Row(val id: Long, val data: String?, val relPath: String?, val pending: Boolean, val mime: String?)
+    /** The file is there and, when MediaStore knows its size, fully written. */
+    private fun ready(f: File, size: Long) = f.isFile && f.length().let { it > 0 && it >= size }
+
+    private class Row(val id: Long, val data: String?, val relPath: String?, val pending: Boolean, val mime: String?, val size: Long)
 
     private fun wanted(t: Targets, relPath: String?): Boolean {
         val rel = relPath?.trimEnd('/') ?: return false
@@ -164,6 +178,7 @@ class MediaWatcher(
 
     companion object {
         private const val TAG = "SyncBoard"
+        private const val GIVE_UP_MS = 30_000L
         private val IMAGE = Regex(".*\\.(png|jpe?g|webp|heic)$", RegexOption.IGNORE_CASE)
         private val SCREENSHOT_WORDS = listOf("screenshot", "screen_shot", "截屏", "截图")
         private const val ROOT = "/storage/emulated/0"

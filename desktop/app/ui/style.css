@@ -126,6 +126,7 @@ label.row { cursor: pointer; }
 label.row:hover { background: color-mix(in srgb, var(--hover) 50%, transparent); }
 .item .meta { flex: 1; min-width: 0; }
 .item .name { font-weight: 600; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.item .name .model { font-weight: 400; color: var(--muted); font-size: 12px; margin-left: 8px; }
 .item .sub { color: var(--muted); font-size: 12px; display: flex; align-items: center; gap: 6px; }
 .item .sub .dot { width: 6px; height: 6px; box-shadow: none; }
 .empty { padding: 16px 14px; color: var(--muted); font-size: 13px; }
@@ -224,3 +225,5 @@ footer { color: var(--muted); font-size: 12px; margin: 22px 2px 0; }
 .item.pickable { cursor: pointer; }
 .item.pickable:hover { background: color-mix(in srgb, var(--hover) 50%, transparent); }
 .item.picked { box-shadow: inset 3px 0 0 var(--ink); }
+
+.row-btns { display: flex; gap: 6px; flex-shrink: 0; }

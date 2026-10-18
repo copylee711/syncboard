@@ -13,6 +13,15 @@ pub struct Peer {
     pub psk: String,
     #[serde(default)]
     pub last_addr: Option<String>,
+    /// The user's own name for this device (备注), shown instead of `name`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub alias: Option<String>,
+}
+
+impl Peer {
+    pub fn display_name(&self) -> &str {
+        self.alias.as_deref().filter(|a| !a.is_empty()).unwrap_or(&self.name)
+    }
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -89,7 +98,11 @@ impl Store {
         self.config.peers.iter().find(|p| p.id == id)
     }
 
-    pub fn upsert_peer(&mut self, peer: Peer) {
+    pub fn upsert_peer(&mut self, mut peer: Peer) {
+        // Pairing again keeps the 备注.
+        if peer.alias.is_none() {
+            peer.alias = self.peer(&peer.id).and_then(|p| p.alias.clone());
+        }
         self.config.peers.retain(|p| p.id != peer.id);
         self.config.peers.push(peer);
     }

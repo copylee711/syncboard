@@ -122,6 +122,8 @@ pub struct Engine {
     pulls: Mutex<HashMap<String, Pull>>,
     /// Transfers the file manager's queue awaits, by transfer id.
     done_waiting: Mutex<HashMap<String, oneshot::Sender<TransferResult>>>,
+    /// Transfers started through [`Self::push_file`] / [`Self::pull_file`] (the file manager's).
+    managed: Mutex<std::collections::HashSet<String>>,
     /// Transfers the user cancelled; checked while streaming either way.
     cancelled: Mutex<HashSet<String>>,
     next: AtomicU64,
@@ -149,6 +151,7 @@ impl Engine {
             fs_waiting: Mutex::new(HashMap::new()),
             pulls: Mutex::new(HashMap::new()),
             done_waiting: Mutex::new(HashMap::new()),
+            managed: Mutex::new(Default::default()),
             cancelled: Mutex::new(HashSet::new()),
             next: AtomicU64::new(1),
             port,
@@ -249,6 +252,21 @@ impl Engine {
         }
     }
 
+    /// Sets the user's 备注 for a paired device (empty clears it).
+    pub fn set_alias(&self, id: &str, alias: &str) -> Result<()> {
+        let alias = alias.trim();
+        let mut s = self.store.lock().unwrap();
+        let Some(p) = s.config.peers.iter_mut().find(|p| p.id == id) else { bail!("没有这台设备") };
+        p.alias = (!alias.is_empty()).then(|| alias.to_string());
+        let name = p.display_name().to_string();
+        s.save()?;
+        drop(s);
+        if let Some(sess) = self.sessions.lock().unwrap().get_mut(id) {
+            sess.name = name;
+        }
+        Ok(())
+    }
+
     pub fn unpair(&self, id: &str) -> Result<()> {
         if let Some(s) = self.sessions.lock().unwrap().remove(id) {
             // Lets the phone forget this PC too; it then closes the connection.
@@ -311,6 +329,7 @@ impl Engine {
         let (tx, rx) = oneshot::channel();
         match self.offer_file(peer, path, Some(dir)).await {
             Ok(id) => {
+                self.manage(&id);
                 self.done_waiting.lock().unwrap().insert(id.clone(), tx);
                 (id, rx)
             }
@@ -330,6 +349,7 @@ impl Engine {
             return (id, rx);
         };
         let name = path.rsplit('/').next().unwrap_or(path).to_string();
+        self.manage(&id);
         self.pulls.lock().unwrap().insert(id.clone(), Pull { peer: peer.into(), dest: dest.to_path_buf(), name });
         self.done_waiting.lock().unwrap().insert(id.clone(), tx);
         if stx.send(Message::new(json!({"t":"fs","rid":id,"op":"pull","path":path}))).await.is_err() {
@@ -337,6 +357,20 @@ impl Engine {
             self.finish(&id, Err("手机未连接".into()));
         }
         (id, rx)
+    }
+
+    fn manage(&self, id: &str) {
+        let mut m = self.managed.lock().unwrap();
+        if m.len() > 4096 {
+            m.clear();
+        }
+        m.insert(id.to_string());
+    }
+
+    /// Whether `id` was started by [`Self::push_file`] or [`Self::pull_file`] rather than
+    /// sent by the user (those stay out of the main window's transfer list).
+    pub fn is_managed(&self, id: &str) -> bool {
+        self.managed.lock().unwrap().contains(id)
     }
 
     /// Stops a transfer started with [`Self::push_file`] or [`Self::pull_file`].
@@ -462,7 +496,7 @@ impl Engine {
             return Err(e);
         }
         let port = v.get("port").and_then(Value::as_u64).unwrap_or(0);
-        self.emit(Event::AdbWake { id: peer.id, name: peer.name, addr: format!("{}:{port}", addr.ip()) });
+        self.emit(Event::AdbWake { id: peer.id.clone(), name: peer.display_name().to_string(), addr: format!("{}:{port}", addr.ip()) });
         write_plain(&mut stream, &json!({"t":"wake_ok"})).await?;
         Ok(())
     }
@@ -542,6 +576,7 @@ impl Engine {
                 platform,
                 psk: B64.encode(psk),
                 last_addr: None,
+                alias: None,
             });
             s.save()?;
         }
@@ -579,7 +614,7 @@ impl Engine {
                 // The phone's record doesn't open with our key: it holds a different
                 // psk for us. It sees the same on its side and stops retrying.
                 if self.key_mismatch.lock().unwrap().insert(peer_id.clone()) {
-                    self.emit(Event::KeyMismatch { id: peer_id.clone(), name: peer.name.clone() });
+                    self.emit(Event::KeyMismatch { id: peer_id.clone(), name: peer.display_name().to_string() });
                 }
                 bail!("key mismatch with {peer_id}");
             }
@@ -594,7 +629,7 @@ impl Engine {
         let gen = self.next.fetch_add(1, Ordering::Relaxed);
         self.sessions.lock().unwrap().insert(
             peer_id.clone(),
-            Session { gen, name: peer.name.clone(), addr, tx: tx.clone() },
+            Session { gen, name: peer.display_name().to_string(), addr, tx: tx.clone() },
         );
         {
             let mut s = self.store.lock().unwrap();
@@ -603,7 +638,7 @@ impl Engine {
             }
             let _ = s.save();
         }
-        self.emit(Event::PeerConnected { id: peer_id.clone(), name: peer.name.clone(), addr: addr.ip().to_string() });
+        self.emit(Event::PeerConnected { id: peer_id.clone(), name: peer.display_name().to_string(), addr: addr.ip().to_string() });
 
         let writer_task = tokio::spawn(async move {
             let mut ping = tokio::time::interval(PING_EVERY);

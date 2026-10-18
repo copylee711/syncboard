@@ -12,19 +12,69 @@ pub fn version_tuple(v: &str) -> Vec<u32> {
     v.split(|c: char| !c.is_ascii_digit()).filter_map(|p| p.parse().ok()).collect()
 }
 
-fn curl(args: &[&str]) -> Result<Vec<u8>, String> {
-    // curl.exe ships with Windows 10 1803+.
-    let out = Command::new("curl.exe")
-        .args(["-fsS", "--connect-timeout", "15"])
-        .args(args)
-        .creation_flags(CREATE_NO_WINDOW)
-        .output()
-        .map_err(|e| e.to_string())?;
-    if out.status.success() {
-        Ok(out.stdout)
-    } else {
-        Err(String::from_utf8_lossy(&out.stderr).trim().to_string())
+/// The proxy set in Windows' 设置 → 网络 → 代理 (what Clash and the like switch on), as a
+/// curl `-x` value. curl.exe only reads proxy environment variables on its own.
+fn system_proxy() -> Option<String> {
+    let key = winreg::RegKey::predef(winreg::enums::HKEY_CURRENT_USER)
+        .open_subkey(r"Software\Microsoft\Windows\CurrentVersion\Internet Settings")
+        .ok()?;
+    if key.get_value::<u32, _>("ProxyEnable").ok()? == 0 {
+        return None;
     }
+    let server: String = key.get_value("ProxyServer").ok()?;
+    parse_proxy(&server)
+}
+
+/// "host:port", or per scheme: "http=host:port;https=host:port;socks=host:port".
+fn parse_proxy(server: &str) -> Option<String> {
+    let server = server.trim();
+    if server.is_empty() {
+        return None;
+    }
+    if !server.contains('=') {
+        return Some(if server.contains("://") { server.to_string() } else { format!("http://{server}") });
+    }
+    let entries: Vec<(&str, &str)> = server.split(';').filter_map(|e| e.split_once('=')).map(|(k, v)| (k.trim(), v.trim())).collect();
+    let pick = |scheme: &str| entries.iter().find(|(k, v)| k.eq_ignore_ascii_case(scheme) && !v.is_empty()).map(|(_, v)| *v);
+    pick("https")
+        .or_else(|| pick("http"))
+        .map(|v| format!("http://{v}"))
+        .or_else(|| pick("socks").map(|v| format!("socks5h://{v}")))
+}
+
+/// How to reach GitHub: through the system proxy when one is on, then directly (the proxy
+/// may be off or broken while the setting stays on).
+fn routes() -> Vec<Option<String>> {
+    match system_proxy() {
+        Some(p) => vec![Some(p), None],
+        None => vec![None],
+    }
+}
+
+fn curl_cmd(proxy: &Option<String>) -> Command {
+    // curl.exe ships with Windows 10 1803+.
+    let mut c = Command::new("curl.exe");
+    if let Some(p) = proxy {
+        c.args(["-x", p]);
+    }
+    c.creation_flags(CREATE_NO_WINDOW);
+    c
+}
+
+fn curl(args: &[&str]) -> Result<Vec<u8>, String> {
+    let mut err = String::new();
+    for proxy in routes() {
+        let out = curl_cmd(&proxy)
+            .args(["-fsS", "--connect-timeout", "15"])
+            .args(args)
+            .output()
+            .map_err(|e| e.to_string())?;
+        if out.status.success() {
+            return Ok(out.stdout);
+        }
+        err = String::from_utf8_lossy(&out.stderr).trim().to_string();
+    }
+    Err(err)
 }
 
 /// The latest release's version, read from where `/releases/latest` redirects
@@ -114,13 +164,24 @@ fn content_length(url: &str) -> u64 {
 /// Downloads `url` into `to`, reporting (bytes so far, total) while curl runs.
 fn download(url: &str, to: &Path, progress: impl Fn(u64, u64)) -> Result<(), String> {
     let total = content_length(url);
-    let mut child = Command::new("curl.exe")
+    let mut err = String::new();
+    for proxy in routes() {
+        let _ = std::fs::remove_file(to);
+        match download_via(&proxy, url, to, total, &progress) {
+            Ok(()) => return Ok(()),
+            Err(e) => err = e,
+        }
+    }
+    Err(err)
+}
+
+fn download_via(proxy: &Option<String>, url: &str, to: &Path, total: u64, progress: &impl Fn(u64, u64)) -> Result<(), String> {
+    let mut child = curl_cmd(proxy)
         .args(["-fsSL", "--connect-timeout", "15", "--retry", "2", "-o"])
         .arg(to)
         .arg(url)
         .stdout(std::process::Stdio::null())
         .stderr(std::process::Stdio::piped())
-        .creation_flags(CREATE_NO_WINDOW)
         .spawn()
         .map_err(|e| e.to_string())?;
     loop {
@@ -157,6 +218,14 @@ pub fn relaunch_after_exit(exe: &Path) {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn proxy_server_formats() {
+        assert_eq!(parse_proxy("127.0.0.1:7890").as_deref(), Some("http://127.0.0.1:7890"));
+        assert_eq!(parse_proxy("http=a:1;https=b:2").as_deref(), Some("http://b:2"));
+        assert_eq!(parse_proxy("socks=c:3").as_deref(), Some("socks5h://c:3"));
+        assert_eq!(parse_proxy(""), None);
+    }
 
     #[test]
     fn versions_compare_numerically() {

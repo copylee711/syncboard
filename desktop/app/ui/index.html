@@ -63,7 +63,7 @@
     </section>
 
     <section id="transfersSection" hidden>
-      <div class="section-head"><h2>传输</h2></div>
+      <div class="section-head"><h2>传输</h2><button class="link" id="transfersClear">清除</button></div>
       <div id="transfers" class="group"></div>
     </section>
 
@@ -79,7 +79,7 @@
         <label class="row"><span>文本</span><span class="switch"><input type="checkbox" data-setting="sync_text" /><i></i></span></label>
         <label class="row"><span>图片</span><span class="switch"><input type="checkbox" data-setting="sync_images" /><i></i></span></label>
         <label class="row"><span>自动接收文件</span><span class="switch"><input type="checkbox" data-setting="auto_accept_files" /><i></i></span></label>
-        <div class="row"><span>接收位置<small id="downloadDir"></small></span><button class="btn small" id="folderBtn2">打开</button></div>
+        <div class="row"><span>接收位置<small id="downloadDir"></small></span><span class="row-btns"><button class="btn small" id="downloadPick">更改</button><button class="btn small" id="folderBtn2">打开</button></span></div>
       </div>
     </section>
 
@@ -188,6 +188,18 @@
       <div class="sheet-actions">
         <button type="button" class="btn" id="linkCancel">取消</button>
         <button type="submit" class="btn ink">打开</button>
+      </div>
+    </form>
+  </div>
+
+  <div class="sheet-backdrop" id="aliasSheet" hidden>
+    <form class="sheet" id="aliasForm">
+      <h3>设备备注</h3>
+      <input class="field" id="aliasInput" maxlength="40" spellcheck="false" autocomplete="off" />
+      <p class="fine" id="aliasHint" style="margin-bottom: 18px"></p>
+      <div class="sheet-actions">
+        <button type="button" class="btn" id="aliasCancel">取消</button>
+        <button type="submit" class="btn ink">保存</button>
       </div>
     </form>
   </div>
