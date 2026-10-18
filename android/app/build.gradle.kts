@@ -11,6 +11,10 @@ val releaseSigning = Properties().apply {
     val f = file(System.getenv("SYNCBOARD_SIGNING") ?: "${System.getProperty("user.home")}/.syncboard/keystore.properties")
     if (f.isFile) f.inputStream().use { load(it) }
 }
+// CI must never publish a debug-signed APK: installed copies could not be updated with it.
+if (releaseSigning.isEmpty() && System.getenv("SYNCBOARD_REQUIRE_SIGNING") == "1") {
+    throw GradleException("Release signing is required but no keystore.properties was found")
+}
 
 android {
     namespace = "app.syncboard"
