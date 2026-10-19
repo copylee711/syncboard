@@ -772,7 +772,7 @@ impl Engine {
             }
             "file.offer" if m.str("dir").is_some() => {
                 // An upload into a folder the device picked while browsing this PC.
-                let name = sanitize_name(m.str("name").unwrap_or("file"));
+                let name = sanitize_push_name(m.str("name").unwrap_or("file"));
                 let size = m.u64("size").unwrap_or(0);
                 let dir = match pcfs::check_path(m.str("dir").unwrap_or_default()) {
                     Ok(_) if !self.remote_browse_allowed() => Err("这台电脑没有开启「允许已配对设备浏览文件」".to_string()),
@@ -1060,6 +1060,18 @@ fn sanitize_name(name: &str) -> String {
     if cleaned.is_empty() { "file".into() } else { cleaned }
 }
 
+/// Like [`sanitize_name`] but keeps a leading dot: a device copying ".config" into a folder
+/// it chose expects the same name. Trailing dots and spaces still go (Windows drops them).
+fn sanitize_push_name(name: &str) -> String {
+    let base = name.rsplit(['/', '\\']).next().unwrap_or(name);
+    let cleaned: String = base
+        .chars()
+        .map(|c| if c.is_control() || r#"<>:"/\|?*"#.contains(c) { '_' } else { c })
+        .collect();
+    let cleaned = cleaned.trim().trim_end_matches(['.', ' ']).to_string();
+    if cleaned.is_empty() || cleaned == "." || cleaned == ".." { "file".into() } else { cleaned }
+}
+
 fn unique_path(dir: &Path, name: &str) -> PathBuf {
     let p = dir.join(name);
     if !p.exists() {
@@ -1131,6 +1143,10 @@ mod tests {
         assert_eq!(sanitize_name("../../evil.txt"), "evil.txt");
         assert_eq!(sanitize_name(r"C:\x\a<b>.png"), "a_b_.png");
         assert_eq!(sanitize_name(".."), "file");
+        assert_eq!(sanitize_push_name(".config"), ".config");
+        assert_eq!(sanitize_push_name("../.."), "file");
+        assert_eq!(sanitize_push_name("a.txt. "), "a.txt");
+        assert_eq!(sanitize_push_name(r"x\..\evil:1"), "evil_1");
     }
 
     #[test]

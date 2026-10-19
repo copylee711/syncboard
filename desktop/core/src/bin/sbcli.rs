@@ -1,5 +1,6 @@
 //! Headless test tool.
 //!   sbcli serve [dir]        run the PC engine with clipboard sync
+//!                            (SB_PORT: other port; SB_ALLOW_BROWSE=1: answer §8.1 requests)
 //!   sbcli phone <uri> [dir]  act as a phone: pair via QR uri, then print/sync text
 
 use anyhow::Result;
@@ -25,7 +26,11 @@ async fn main() -> Result<()> {
 async fn serve(dir: Option<PathBuf>) -> Result<()> {
     let dir = dir.unwrap_or_else(|| PathBuf::from(std::env::var("APPDATA").unwrap()).join("SyncBoard"));
     let (tx, rx) = tokio::sync::mpsc::unbounded_channel();
-    let engine = Engine::start(&dir, PORT, tx).await?;
+    let port = std::env::var("SB_PORT").ok().and_then(|p| p.parse().ok()).unwrap_or(PORT);
+    let engine = Engine::start(&dir, port, tx).await?;
+    if std::env::var("SB_ALLOW_BROWSE").as_deref() == Ok("1") {
+        engine.with_store(|s| s.config.settings.allow_remote_browse = true);
+    }
     let uri = engine.pairing_uri();
     let qr = qrcode::QrCode::new(uri.as_bytes())?;
     println!("{}", qr.render::<qrcode::render::unicode::Dense1x2>().quiet_zone(true).build());

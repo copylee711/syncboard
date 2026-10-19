@@ -18,7 +18,16 @@ pub trait FsHost: Send + Sync {
     /// "drive" or "place" (Desktop, Downloads...).
     fn roots(&self) -> Value {
         let home = std::env::var("USERPROFILE").or_else(|_| std::env::var("HOME")).unwrap_or_else(|_| "/".into());
-        json!({"home": home, "volumes": [{"name": "主目录", "path": home, "total": 0, "free": 0, "kind": "place"}]})
+        let mut volumes = vec![json!({"name": "主目录", "path": home, "total": 0, "free": 0, "kind": "place"})];
+        if cfg!(windows) {
+            for c in b'A'..=b'Z' {
+                let root = format!("{}:\\", c as char);
+                if Path::new(&root).exists() {
+                    volumes.push(json!({"name": format!("{}:", c as char), "path": root, "total": 0, "free": 0, "kind": "drive"}));
+                }
+            }
+        }
+        json!({"home": home, "volumes": volumes})
     }
 
     /// Deletes `paths`; the desktop app sends them to the Recycle Bin instead.
