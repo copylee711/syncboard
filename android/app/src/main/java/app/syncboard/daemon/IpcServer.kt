@@ -4,6 +4,7 @@ import android.os.Process
 import android.util.Log
 import app.syncboard.proto.readPlain
 import app.syncboard.proto.writePlain
+import app.syncboard.proto.writeChunk
 import org.json.JSONArray
 import org.json.JSONObject
 import java.io.BufferedInputStream
@@ -52,21 +53,41 @@ class IpcServer private constructor(private val server: ServerSocket, private va
         }, "ipc").start()
     }
 
-    private fun allowed(sock: Socket): Boolean {
-        val uid = peerUid(sock.port) ?: return false
-        return uid == 0 || uid == Process.SHELL_UID || uid == appUid()
-    }
+    private fun isOwner(uid: Int) = uid == 0 || uid == Process.SHELL_UID || uid == appUid()
 
     private fun serve(sock: Socket) {
         sock.use {
             val input = DataInputStream(BufferedInputStream(sock.getInputStream()))
             val out = DataOutputStream(BufferedOutputStream(sock.getOutputStream()))
-            if (!allowed(sock)) {
-                Log.w(Engine.TAG, "ipc: refused connection from port ${sock.port}")
+            val uid = peerUid(sock.port)
+            val owner = uid != null && isOwner(uid)
+            if (!owner && (uid == null || !engine.isClient(uid))) {
+                Log.w(Engine.TAG, "ipc: refused connection from port ${sock.port} (uid $uid)")
+                // Tell an unapproved client why, so it can ask the user to approve it.
+                runCatching { writePlain(out, JSONObject().put("event", "denied")) }
                 return
             }
             val hello = runCatching { readPlain(input) }.getOrNull() ?: return
+            if (!owner) {
+                // Approved apps (TwinFile) get files and PC browsing, nothing else.
+                serveClient(hello, input, out)
+                return
+            }
             when (hello.optString("cmd")) {
+                "authorizeClient" -> {
+                    engine.authorize(hello.getString("pkg"), hello.getInt("uid"))
+                    writePlain(out, JSONObject().put("ok", true))
+                    return
+                }
+                "revokeClient" -> {
+                    engine.revoke(hello.getString("pkg"))
+                    writePlain(out, JSONObject().put("ok", true))
+                    return
+                }
+                "clients" -> {
+                    writePlain(out, JSONObject().put("clients", engine.clients()))
+                    return
+                }
                 "sendFile" -> {
                     val size = hello.optLong("size")
                     val ok = engine.sendFile(hello.optString("pc").ifEmpty { null }, Engine.sanitize(hello.optString("name")),
@@ -133,6 +154,7 @@ class IpcServer private constructor(private val server: ServerSocket, private va
             "unpair" -> engine.unpair(req.getString("id"))
             "settings" -> engine.updateSettings(req.getJSONObject("settings"))
             "reconnect" -> engine.reconnect()
+            "revokeClient" -> engine.revoke(req.getString("pkg"))
             "wakeInfo" -> writePlain(out, engine.wakeInfo())
             "discover" -> Thread {
                 val found = engine.discover(1500)
@@ -150,6 +172,77 @@ class IpcServer private constructor(private val server: ServerSocket, private va
                 broadcast(JSONObject().put("event", "stopping"))
                 Thread { Thread.sleep(200); System.exit(0) }.start()
             }
+        }
+    }
+
+    /**
+     * One request from an approved app, then the connection closes:
+     *  - {"cmd":"hello"} → {"event":"hello","version"} (checks the approval);
+     *  - {"cmd":"exec",argv,stdin?} → runs argv as this daemon (shell user, so Android/data
+     *    is reachable): {"ok"}, stdin chunks from the client when asked, stdout back as
+     *    chunks, an empty chunk, then {"exit","err"};
+     *  - {"cmd":"pcs"} → {"pcs":[{id,name}]} with a live session;
+     *  - {"cmd":"pcFs",pc,req,timeout?} → the PC's fs.res header, then u32 + body bytes;
+     *  - {"cmd":"pcPull",pc,path} / {"cmd":"pcPush",pc,dir,name,size,mtime}: see [Engine.pcPull], [Engine.pcPush].
+     * Chunks are u32 length + bytes, see [writeChunk].
+     */
+    private fun serveClient(req: JSONObject, input: DataInputStream, out: DataOutputStream) {
+        try {
+            when (req.optString("cmd")) {
+                "hello" -> writePlain(out, JSONObject().put("event", "hello").put("version", VERSION))
+                "exec" -> exec(req, input, out)
+                "pcs" -> writePlain(out, JSONObject().put("pcs", engine.connectedPcs()))
+                "pcFs" -> {
+                    val r = engine.pcRequest(req.getString("pc"), req.getJSONObject("req"), req.optLong("timeout", 20_000))
+                    writePlain(out, r.header)
+                    synchronized(out) { out.writeInt(r.body.size); out.write(r.body); out.flush() }
+                }
+                "pcPull" -> engine.pcPull(req.getString("pc"), req.getString("path"), out)
+                "pcPush" -> engine.pcPush(req.getString("pc"), req.getString("dir"), Engine.sanitize(req.getString("name")),
+                    req.optLong("size"), req.optLong("mtime"), input, out)
+            }
+        } catch (e: java.io.IOException) {
+            runCatching { writePlain(out, JSONObject().put("ok", false).put("error", e.message ?: "出错了")) }
+        }
+    }
+
+    private fun exec(req: JSONObject, input: DataInputStream, out: DataOutputStream) {
+        val a = req.getJSONArray("argv")
+        val p = ProcessBuilder(List(a.length()) { a.getString(it) }).start()
+        writePlain(out, JSONObject().put("ok", true))
+        val feeder = if (req.optBoolean("stdin")) Thread {
+            runCatching {
+                p.outputStream.use { o ->
+                    while (true) {
+                        val n = input.readInt()
+                        if (n <= 0) break
+                        val buf = ByteArray(n).also { input.readFully(it) }
+                        o.write(buf)
+                    }
+                }
+            }
+        }.apply { start() } else { p.outputStream.close(); null }
+        val err = java.io.ByteArrayOutputStream()
+        val errPump = Thread {
+            runCatching { p.errorStream.use { e -> val b = ByteArray(4096); while (true) { val n = e.read(b); if (n < 0) break; if (err.size() < 16384) err.write(b, 0, n) } } }
+        }.apply { start() }
+        val buf = ByteArray(64 * 1024)
+        try {
+            p.inputStream.use { o ->
+                while (true) {
+                    val n = o.read(buf)
+                    if (n < 0) break
+                    if (n > 0) writeChunk(out, buf, n)
+                }
+            }
+            synchronized(out) { out.writeInt(0); out.flush() }
+            val code = p.waitFor()
+            errPump.join(5000)
+            feeder?.join(5000)
+            writePlain(out, JSONObject().put("exit", code).put("err", err.toString(Charsets.UTF_8.name()).trim()))
+        } catch (e: java.io.IOException) {
+            p.destroy() // the client hung up
+            throw e
         }
     }
 

@@ -767,6 +767,23 @@ private fun SettingsScreen(
             ) { autoRecover = it; AppPrefs.setAutoRecover(ctx, it) }
         }
 
+        val clients = (conn as? DaemonClient.Conn.Running)?.status?.optJSONArray("clients")
+            ?.let { a -> List(a.length()) { a.getString(it) } }.orEmpty()
+        if (clients.isNotEmpty()) {
+            SectionLabel("已授权的应用")
+            Group {
+                clients.forEachIndexed { i, pkg ->
+                    if (i > 0) Divider()
+                    val label = remember(pkg) {
+                        runCatching { ctx.packageManager.getApplicationInfo(pkg, 0).loadLabel(ctx.packageManager).toString() }.getOrDefault(pkg)
+                    }
+                    ActionRow(label, "可以通过 SyncBoard 浏览已连接电脑的文件，并访问 Android/data。点按撤销", p.danger) {
+                        client.send(JSONObject().put("cmd", "revokeClient").put("pkg", pkg))
+                    }
+                }
+            }
+        }
+
         if (s != null) {
             SectionLabel("服务")
             Group {

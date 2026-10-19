@@ -26,6 +26,15 @@ fun writePlain(out: DataOutputStream, v: JSONObject) {
     }
 }
 
+/** A raw byte chunk on the local IPC socket: u32 length, then the bytes; length 0 ends a stream. */
+fun writeChunk(out: java.io.DataOutputStream, b: ByteArray, n: Int) {
+    synchronized(out) {
+        out.writeInt(n)
+        out.write(b, 0, n)
+        out.flush()
+    }
+}
+
 class Message(val header: JSONObject, val body: ByteArray = EMPTY) {
     val kind: String get() = header.optString("t")
     fun str(key: String): String = header.optString(key)

@@ -21,6 +21,11 @@
 
     <uses-feature android:name="android.hardware.camera" android:required="false" />
 
+    <!-- To show approved apps by name in 设置 → 已授权的应用. -->
+    <queries>
+        <package android:name="app.twinfile" />
+    </queries>
+
     <application
         android:allowBackup="false"
         android:icon="@mipmap/ic_launcher"
@@ -61,6 +66,19 @@
             <intent-filter>
                 <action android:name="android.intent.action.MAIN" />
                 <category android:name="android.intent.category.LAUNCHER" />
+            </intent-filter>
+        </activity>
+
+        <!-- Another app (TwinFile) asks to use the phone service; the user approves here. -->
+        <activity
+            android:name=".ui.AuthorizeClientActivity"
+            android:exported="true"
+            android:excludeFromRecents="true"
+            android:noHistory="true"
+            android:theme="@android:style/Theme.Translucent.NoTitleBar">
+            <intent-filter>
+                <action android:name="app.syncboard.action.AUTHORIZE_CLIENT" />
+                <category android:name="android.intent.category.DEFAULT" />
             </intent-filter>
         </activity>
 

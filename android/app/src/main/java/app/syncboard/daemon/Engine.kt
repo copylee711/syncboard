@@ -11,6 +11,7 @@ import app.syncboard.proto.SecureReader
 import app.syncboard.proto.SecureWriter
 import app.syncboard.proto.readPlain
 import app.syncboard.proto.toHex
+import app.syncboard.proto.writeChunk
 import app.syncboard.proto.writePlain
 import org.json.JSONArray
 import org.json.JSONObject
@@ -31,6 +32,7 @@ import java.net.Socket
 import java.net.SocketTimeoutException
 import java.security.GeneralSecurityException
 import java.security.MessageDigest
+import java.util.concurrent.CompletableFuture
 import java.util.concurrent.ConcurrentHashMap
 import java.util.concurrent.CountDownLatch
 import java.util.concurrent.Executors
@@ -243,7 +245,7 @@ class Engine(
             }
         }
         return JSONObject().put("event", "status").put("deviceId", config.deviceId).put("name", config.name)
-            .put("pcs", pcs).put("settings", config.settings.toJson())
+            .put("pcs", pcs).put("settings", config.settings.toJson()).put("clients", clients())
     }
 
     private fun pushStatus() = emit(status())
@@ -606,6 +608,7 @@ class Engine(
     private class Waiter {
         val latch = CountDownLatch(1)
         @Volatile var accepted = false
+        @Volatile var error = ""
     }
 
     private inner class Session(
@@ -627,6 +630,8 @@ class Engine(
             } finally {
                 close()
                 sessions.remove(pc.id, this)
+                // Clients waiting on this PC get an answer instead of hanging.
+                pullSinks.values.filter { it.pc == pc.id }.forEach { it.started.complete(lost()); it.done.complete("与电脑的连接已断开") }
                 inbound.values.forEach { if (it is Inbound.FileIn) { runCatching { it.out.close() }; it.file.delete() } }
                 pushStatus()
             }
@@ -634,6 +639,25 @@ class Engine(
 
         private fun handle(m: Message) {
             val id = m.str("id")
+            pullSinks[id]?.let { sink ->
+                if (m.kind == "chunk") {
+                    try {
+                        sink.md.update(m.body)
+                        writeChunk(sink.out, m.body, m.body.size)
+                    } catch (e: IOException) {
+                        // The client went away: stop the PC sending.
+                        pullSinks.remove(id)
+                        send(Message.of("t" to "file.cancel", "id" to id))
+                        sink.done.complete("客户端已断开")
+                    }
+                    return
+                }
+                if (m.kind == "end") {
+                    pullSinks.remove(id)
+                    sink.done.complete(if (sink.md.digest().toHex() == m.str("sha256")) null else "校验失败")
+                    return
+                }
+            }
             when (m.kind) {
                 "ping" -> io.execute { runCatching { writer.write(Message.of("t" to "pong")) } }
                 "unpaired" -> {
@@ -681,6 +705,15 @@ class Engine(
                         send(Message.of("t" to "file.reject", "id" to id))
                     }
                 }
+                // Replies to requests a client (TwinFile) made through this session.
+                "fs.res" -> {
+                    val rid = m.str("rid")
+                    pullSinks[rid]?.let { sink ->
+                        if (!m.header.optBoolean("ok")) pullSinks.remove(rid)
+                        sink.started.complete(m)
+                    } ?: fsWaiting.remove(rid)?.complete(m)
+                }
+                "file.done", "file.failed" -> pushWaiting.remove(id)?.complete(m)
                 "chunk" -> when (val ib = inbound[id]) {
                     is Inbound.Image -> {
                         ib.md.update(m.body)
@@ -721,9 +754,11 @@ class Engine(
                         if (!it.quiet) emitFailed(id, it.name, "对方已取消")
                     }
                     if (id in pulling) cancelled += id
+                    pullSinks.remove(id)?.done?.complete("电脑已取消")
                 }
                 "file.accept", "file.reject" -> waiters[id]?.let {
                     it.accepted = m.kind == "file.accept"
+                    it.error = m.str("error")
                     it.latch.countDown()
                 }
             }
@@ -834,6 +869,144 @@ class Engine(
             return false
         } finally {
             waiters.remove(id)
+        }
+    }
+
+    // ---- clients browsing a PC through this phone's session (TwinFile) ----
+
+    /** A pull a client asked for: the session's read loop writes its chunks to [out]. */
+    private class PullSink(val pc: String, val out: DataOutputStream) {
+        val md: MessageDigest = MessageDigest.getInstance("SHA-256")
+        /** The PC's first reply: size, or an error. */
+        val started = CompletableFuture<Message>()
+        /** Null when every chunk arrived and the hash matched, else why not. */
+        val done = CompletableFuture<String?>()
+    }
+
+    private val fsWaiting = ConcurrentHashMap<String, CompletableFuture<Message>>()
+    private val pullSinks = ConcurrentHashMap<String, PullSink>()
+    private val pushWaiting = ConcurrentHashMap<String, CompletableFuture<Message>>()
+
+    /** Lets [pkg] (running as [uid]) use this daemon; the SyncBoard app asks after the user agrees. */
+    fun authorize(pkg: String, uid: Int) {
+        synchronized(config) {
+            config.clients[pkg] = uid
+            config.save()
+        }
+        pushStatus()
+    }
+
+    fun revoke(pkg: String) {
+        synchronized(config) {
+            config.clients.remove(pkg)
+            config.save()
+        }
+        pushStatus()
+    }
+
+    fun clients(): JSONArray = synchronized(config) { JSONArray(config.clients.keys.toList()) }
+
+    /** True when [uid] belongs to an approved app that still has that uid (not a reinstall or reuse). */
+    fun isClient(uid: Int): Boolean {
+        val pkgs = synchronized(config) { config.clients.filterValues { it == uid }.keys }
+        if (pkgs.isEmpty()) return false
+        val owned = runCatching { ShellContext.init().packageManager.getPackagesForUid(uid)?.toSet() }.getOrNull() ?: return false
+        return pkgs.any { it in owned }
+    }
+
+    private fun lost() = Message.of("t" to "fs.res", "ok" to false, "error" to "与电脑的连接已断开")
+
+    private fun session(pcId: String): Session = sessions[pcId] ?: throw IOException("电脑未连接")
+
+    /** PCs with a live session, for a client's 电脑 list. */
+    fun connectedPcs(): JSONArray = JSONArray(sessions.values.map { JSONObject().put("id", it.pc.id).put("name", it.pc.name) })
+
+    /** One file-manager request (protocol §8.1) to [pcId]; returns the PC's `fs.res`. */
+    fun pcRequest(pcId: String, req: JSONObject, timeoutMs: Long): Message {
+        val s = session(pcId)
+        val rid = Crypto.randomId()
+        val f = CompletableFuture<Message>()
+        fsWaiting[rid] = f
+        try {
+            s.writer.write(Message(JSONObject(req.toString()).put("t", "fs").put("rid", rid)))
+            return f.get(timeoutMs, TimeUnit.MILLISECONDS)
+        } catch (e: java.util.concurrent.TimeoutException) {
+            throw IOException("电脑没有响应")
+        } finally {
+            fsWaiting.remove(rid)
+        }
+    }
+
+    /**
+     * Streams [path] from [pcId] to a client: a plain frame with the size (or the error), the
+     * chunks, an empty chunk, then a plain frame saying whether it all arrived intact.
+     */
+    fun pcPull(pcId: String, path: String, out: DataOutputStream) {
+        val s = session(pcId)
+        val id = Crypto.randomId()
+        val sink = PullSink(pcId, out)
+        pullSinks[id] = sink
+        try {
+            s.writer.write(Message.of("t" to "fs", "rid" to id, "op" to "pull", "path" to path))
+            val res = try {
+                sink.started.get(30, TimeUnit.SECONDS)
+            } catch (e: java.util.concurrent.TimeoutException) {
+                lost()
+            }
+            if (!res.header.optBoolean("ok")) {
+                writePlain(out, JSONObject().put("ok", false).put("error", res.str("error").ifEmpty { "读取失败" }))
+                return
+            }
+            writePlain(out, JSONObject().put("ok", true).put("size", res.header.optLong("size")).put("name", res.str("name")))
+            val err = sink.done.get()
+            synchronized(out) { out.writeInt(0); out.flush() }
+            writePlain(out, JSONObject().put("ok", err == null).put("error", err ?: ""))
+        } finally {
+            pullSinks.remove(id)
+        }
+    }
+
+    /**
+     * Pushes a client's file into folder [dir] on [pcId]: replies whether the PC accepted, then
+     * reads the client's chunks (ending with an empty one) and replies with the PC's verdict.
+     */
+    fun pcPush(pcId: String, dir: String, name: String, size: Long, mtime: Long, input: DataInputStream, out: DataOutputStream) {
+        val s = session(pcId)
+        val id = Crypto.randomId()
+        val w = Waiter()
+        waiters[id] = w
+        val finished = CompletableFuture<Message>()
+        pushWaiting[id] = finished
+        try {
+            s.writer.write(Message.of("t" to "file.offer", "id" to id, "name" to name, "size" to size, "dir" to dir, "mtime" to mtime))
+            if (!w.latch.await(60, TimeUnit.SECONDS) || !w.accepted) {
+                writePlain(out, JSONObject().put("ok", false).put("error", w.error.ifEmpty { "电脑没有接收" }))
+                return
+            }
+            writePlain(out, JSONObject().put("ok", true))
+            val md = MessageDigest.getInstance("SHA-256")
+            var seq = 0
+            while (true) {
+                val n = input.readInt()
+                if (n == 0) break
+                if (n < 0 || n > CHUNK_SIZE) throw IOException("bad chunk")
+                val buf = ByteArray(n).also { input.readFully(it) }
+                md.update(buf)
+                s.writer.write(Message.of("t" to "chunk", "id" to id, "seq" to seq++, body = buf))
+            }
+            s.writer.write(Message.of("t" to "end", "id" to id, "sha256" to md.digest().toHex()))
+            val r = try {
+                finished.get(120, TimeUnit.SECONDS)
+            } catch (e: java.util.concurrent.TimeoutException) {
+                null
+            }
+            writePlain(out, JSONObject().put("ok", r?.kind == "file.done").put("error", r?.str("error") ?: "电脑没有确认收到"))
+        } catch (e: IOException) {
+            runCatching { s.writer.write(Message.of("t" to "file.cancel", "id" to id)) }
+            throw e
+        } finally {
+            waiters.remove(id)
+            pushWaiting.remove(id)
         }
     }
 

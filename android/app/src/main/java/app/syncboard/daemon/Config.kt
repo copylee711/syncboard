@@ -95,6 +95,8 @@ class Config private constructor(private val file: File) {
     var name: String = Build.MODEL ?: "Android"
     val pcs = mutableListOf<Pc>()
     val settings = Settings()
+    /** Apps the user let use this daemon (TwinFile): package name -> uid at approval time. */
+    val clients = mutableMapOf<String, Int>()
 
     @Synchronized
     fun save() {
@@ -102,6 +104,7 @@ class Config private constructor(private val file: File) {
             .put("deviceId", deviceId).put("name", name)
             .put("pcs", JSONArray(pcs.map { it.toJson() }))
             .put("settings", settings.toJson())
+            .put("clients", JSONObject().also { o -> clients.forEach { (k, v) -> o.put(k, v) } })
         file.parentFile?.mkdirs()
         val tmp = File(file.path + ".tmp")
         tmp.writeText(o.toString(2))
@@ -135,6 +138,7 @@ class Config private constructor(private val file: File) {
                 c.name = o.optString("name", c.name)
                 o.optJSONArray("pcs")?.let { a -> for (i in 0 until a.length()) c.pcs.add(Pc.fromJson(a.getJSONObject(i))) }
                 o.optJSONObject("settings")?.let { c.settings.update(it) }
+                o.optJSONObject("clients")?.let { cl -> cl.keys().forEach { k -> c.clients[k] = cl.getInt(k) } }
             }
             c.save()
             return c
