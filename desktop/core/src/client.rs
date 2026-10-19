@@ -35,15 +35,20 @@ pub struct Identity {
 
 /// QR pairing; returns (server id, psk).
 pub async fn pair_qr(addr: &str, me: &Identity, token: &[u8]) -> Result<(String, [u8; 32])> {
+    pair_qr_as(addr, me, token, None).await
+}
+
+/// QR pairing that announces a file-manager `app` (protocol §2), e.g. "twinfile".
+pub async fn pair_qr_as(addr: &str, me: &Identity, token: &[u8], app: Option<&str>) -> Result<(String, [u8; 32])> {
     let mut s = TcpStream::connect(addr).await?;
     let ecdh = Ecdh::new();
     let nonce_c = crypto::random_bytes::<32>();
-    write_plain(
-        &mut s,
-        &json!({"t":"pair","v":1,"mode":"qr","id":me.id,"name":me.name,"platform":"android",
-                "pub":B64.encode(ecdh.public),"nonce":B64.encode(nonce_c)}),
-    )
-    .await?;
+    let mut hello = json!({"t":"pair","v":1,"mode":"qr","id":me.id,"name":me.name,"platform":"android",
+                           "pub":B64.encode(ecdh.public),"nonce":B64.encode(nonce_c)});
+    if let Some(app) = app {
+        hello["app"] = json!(app);
+    }
+    write_plain(&mut s, &hello).await?;
     let resp = read_plain(&mut s).await?;
     let pub_s = B64.decode(resp["pub"].as_str().unwrap_or_default())?;
     let nonce_s = B64.decode(resp["nonce"].as_str().unwrap_or_default())?;

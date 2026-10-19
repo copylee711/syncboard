@@ -4,6 +4,7 @@
 
 use crate::crypto::{self, Ecdh, RecordCipher};
 use crate::frame::{read_plain, write_plain, Message, SecureReader, SecureWriter, CHUNK_SIZE};
+use crate::pcfs::{self, FsHost};
 use crate::store::{Peer, Store};
 use anyhow::{anyhow, bail, Context, Result};
 use base64::engine::general_purpose::{STANDARD as B64, URL_SAFE_NO_PAD as B64URL};
@@ -82,11 +83,19 @@ struct Session {
     name: String,
     addr: SocketAddr,
     tx: mpsc::Sender<Message>,
+    /// A file-manager app (TwinFile), not the SyncBoard phone service: no clipboard.
+    files_only: bool,
 }
 
 enum Inbound {
     Image { hasher: Sha256, buf: Vec<u8>, size: u64 },
-    File { hasher: Sha256, file: tokio::fs::File, path: PathBuf, name: String, size: u64, done: u64 },
+    File { hasher: Sha256, file: tokio::fs::File, path: PathBuf, name: String, size: u64, done: u64, push: Option<Push> },
+}
+
+/// A device's upload into a folder it picked on this PC (`file.offer` with `dir`).
+struct Push {
+    /// Modification time to give the file, ms.
+    mtime: Option<u64>,
 }
 
 struct Outbound {
@@ -131,6 +140,9 @@ pub struct Engine {
     managed: Mutex<std::collections::HashSet<String>>,
     /// Transfers the user cancelled; checked while streaming either way.
     cancelled: Mutex<HashSet<String>>,
+    /// Files a device is pulling from this PC (protocol §8, PC side), by request id.
+    serving: Mutex<HashSet<String>>,
+    fs_host: Mutex<Arc<dyn FsHost>>,
     next: AtomicU64,
     port: u16,
 }
@@ -158,6 +170,8 @@ impl Engine {
             done_waiting: Mutex::new(HashMap::new()),
             managed: Mutex::new(Default::default()),
             cancelled: Mutex::new(HashSet::new()),
+            serving: Mutex::new(HashSet::new()),
+            fs_host: Mutex::new(Arc::new(pcfs::PlainHost)),
             next: AtomicU64::new(1),
             port,
         });
@@ -200,6 +214,16 @@ impl Engine {
 
     pub fn device_name(&self) -> String {
         self.store.lock().unwrap().config.name.clone()
+    }
+
+    /// Installs the platform parts (drives, Recycle Bin, thumbnails) used when a paired
+    /// device browses this PC.
+    pub fn set_fs_host(&self, host: Arc<dyn FsHost>) {
+        *self.fs_host.lock().unwrap() = host;
+    }
+
+    fn remote_browse_allowed(&self) -> bool {
+        self.store.lock().unwrap().config.settings.allow_remote_browse
     }
 
     pub fn with_store<T>(&self, f: impl FnOnce(&mut Store) -> T) -> T {
@@ -286,7 +310,7 @@ impl Engine {
     /// Sends clipboard content to every connected peer.
     pub fn send_clip(self: &Arc<Self>, content: ClipContent) {
         let targets: Vec<mpsc::Sender<Message>> =
-            self.sessions.lock().unwrap().values().map(|s| s.tx.clone()).collect();
+            self.sessions.lock().unwrap().values().filter(|s| !s.files_only).map(|s| s.tx.clone()).collect();
         for tx in targets {
             let content = content.clone();
             tokio::spawn(async move {
@@ -512,6 +536,7 @@ impl Engine {
         let peer_name = field("name").unwrap_or_else(|| "Phone".into());
         let platform = field("platform").unwrap_or_else(|| "android".into());
         let mode = field("mode").unwrap_or_default();
+        let app = field("app");
         let pub_c = B64.decode(field("pub").unwrap_or_default())?;
         let nonce_c = B64.decode(field("nonce").unwrap_or_default())?;
         if nonce_c.len() != 32 {
@@ -582,6 +607,7 @@ impl Engine {
                 psk: B64.encode(psk),
                 last_addr: None,
                 alias: None,
+                app,
             });
             s.save()?;
         }
@@ -634,7 +660,7 @@ impl Engine {
         let gen = self.next.fetch_add(1, Ordering::Relaxed);
         self.sessions.lock().unwrap().insert(
             peer_id.clone(),
-            Session { gen, name: peer.display_name().to_string(), addr, tx: tx.clone() },
+            Session { gen, name: peer.display_name().to_string(), addr, tx: tx.clone(), files_only: peer.app.is_some() },
         );
         {
             let mut s = self.store.lock().unwrap();
@@ -744,6 +770,34 @@ impl Engine {
                     inbound.insert(id, Inbound::Image { hasher: Sha256::new(), buf: Vec::with_capacity(size as usize), size });
                 }
             }
+            "file.offer" if m.str("dir").is_some() => {
+                // An upload into a folder the device picked while browsing this PC.
+                let name = sanitize_name(m.str("name").unwrap_or("file"));
+                let size = m.u64("size").unwrap_or(0);
+                let dir = match pcfs::check_path(m.str("dir").unwrap_or_default()) {
+                    Ok(_) if !self.remote_browse_allowed() => Err("这台电脑没有开启「允许已配对设备浏览文件」".to_string()),
+                    Ok(d) if !d.is_dir() => Err("目标文件夹不存在".to_string()),
+                    other => other,
+                };
+                let file = match &dir {
+                    Ok(d) => {
+                        let path = unique_path(d, &name);
+                        tokio::fs::File::create(&path).await.map(|f| (f, path)).map_err(|e| pcfs::io_err(&e))
+                    }
+                    Err(e) => Err(e.clone()),
+                };
+                match file {
+                    Ok((file, path)) => {
+                        self.manage(&id);
+                        let push = Some(Push { mtime: m.u64("mtime") });
+                        inbound.insert(id.clone(), Inbound::File { hasher: Sha256::new(), file, path, name, size, done: 0, push });
+                        let _ = tx.send(Message::new(json!({"t":"file.accept","id":id}))).await;
+                    }
+                    Err(e) => {
+                        let _ = tx.send(Message::new(json!({"t":"file.reject","id":id,"error":e}))).await;
+                    }
+                }
+            }
             "file.offer" => {
                 let name = sanitize_name(m.str("name").unwrap_or("file"));
                 let size = m.u64("size").unwrap_or(0);
@@ -752,12 +806,44 @@ impl Engine {
                 let path = unique_path(&dir, &name);
                 match tokio::fs::File::create(&path).await {
                     Ok(file) => {
-                        inbound.insert(id.clone(), Inbound::File { hasher: Sha256::new(), file, path, name, size, done: 0 });
+                        inbound.insert(id.clone(), Inbound::File { hasher: Sha256::new(), file, path, name, size, done: 0, push: None });
                         let _ = tx.send(Message::new(json!({"t":"file.accept","id":id}))).await;
                     }
                     Err(_) => {
                         let _ = tx.send(Message::new(json!({"t":"file.reject","id":id}))).await;
                     }
+                }
+            }
+            "fs" => {
+                let rid = m.str("rid").unwrap_or_default().to_string();
+                let op = m.str("op").unwrap_or_default().to_string();
+                if !self.remote_browse_allowed() {
+                    let err = "这台电脑没有开启「允许已配对设备浏览文件」，请在电脑上的 SyncBoard 设置里打开";
+                    let _ = tx.send(Message::new(json!({"t":"fs.res","rid":rid,"ok":false,"error":err}))).await;
+                } else if op == "pull" {
+                    let e = self.clone();
+                    let tx = tx.clone();
+                    let path = m.str("path").unwrap_or_default().to_string();
+                    let peer = peer.to_string();
+                    tokio::spawn(async move { e.serve_pull(peer, rid, path, tx).await });
+                } else {
+                    let host = self.fs_host.lock().unwrap().clone();
+                    let args = m.header.clone();
+                    let tx = tx.clone();
+                    tokio::spawn(async move {
+                        let r = tokio::task::spawn_blocking(move || pcfs::handle(&*host, &op, &args)).await;
+                        let reply = match r {
+                            Ok(Ok((mut h, body))) => {
+                                h["t"] = json!("fs.res");
+                                h["rid"] = json!(rid);
+                                h["ok"] = json!(true);
+                                Message::with_body(h, body)
+                            }
+                            Ok(Err(e)) => Message::new(json!({"t":"fs.res","rid":rid,"ok":false,"error":e})),
+                            Err(_) => Message::new(json!({"t":"fs.res","rid":rid,"ok":false,"error":"电脑端出错"})),
+                        };
+                        let _ = tx.send(reply).await;
+                    });
                 }
             }
             "fs.res" => {
@@ -775,7 +861,7 @@ impl Engine {
                         }
                         match tokio::fs::File::create(&p.dest).await {
                             Ok(file) => {
-                                inbound.insert(rid, Inbound::File { hasher: Sha256::new(), file, path: p.dest, name: p.name, size, done: 0 });
+                                inbound.insert(rid, Inbound::File { hasher: Sha256::new(), file, path: p.dest, name: p.name, size, done: 0, push: None });
                             }
                             Err(e) => {
                                 let _ = tx.send(Message::new(json!({"t":"file.cancel","id":rid}))).await;
@@ -824,19 +910,36 @@ impl Engine {
                             self.emit(Event::Clip { from: peer.into(), content: ClipContent::Image(buf) });
                         }
                     }
-                    Some(Inbound::File { hasher, mut file, path, name, .. }) => {
+                    Some(Inbound::File { hasher, mut file, path, name, push, .. }) => {
                         use tokio::io::AsyncWriteExt as _;
                         file.flush().await?;
-                        drop(file);
-                        if hex::encode(hasher.finalize()) == want {
+                        let ok = hex::encode(hasher.finalize()) == want;
+                        match push.as_ref().and_then(|p| p.mtime) {
+                            Some(t) if ok => {
+                                let _ = file.into_std().await.set_modified(std::time::UNIX_EPOCH + Duration::from_millis(t));
+                            }
+                            _ => drop(file),
+                        }
+                        if ok {
+                            if push.is_some() {
+                                // Tells the uploader where the file landed (the name may have changed).
+                                let _ = tx.send(Message::new(json!({"t":"file.done","id":id,"path":path.to_string_lossy()}))).await;
+                            }
                             self.emit(Event::FileDone { id, name, path: Some(path.to_string_lossy().into_owned()), incoming: true });
                         } else {
                             let _ = tokio::fs::remove_file(&path).await;
+                            if push.is_some() {
+                                let _ = tx.send(Message::new(json!({"t":"file.failed","id":id,"error":"校验失败"}))).await;
+                            }
                             self.emit(Event::FileFailed { id, name, reason: "校验失败".into() });
                         }
                     }
                     None => {}
                 }
+            }
+            "file.cancel" if self.serving.lock().unwrap().contains(&id) => {
+                // The device stopped a pull from this PC; stream_file confirms it.
+                self.cancelled.lock().unwrap().insert(id);
             }
             "file.cancel" => {
                 // Also the phone confirming a pull we cancelled.
@@ -867,6 +970,32 @@ impl Engine {
             _ => {}
         }
         Ok(())
+    }
+
+    /// A device reads a file from this PC (protocol §8 `pull`, PC side): `fs.res` with the
+    /// size, then `chunk`s and `end` under the request id.
+    async fn serve_pull(self: Arc<Self>, peer: String, rid: String, path: String, tx: mpsc::Sender<Message>) {
+        let checked = pcfs::check_path(&path).and_then(|p| {
+            let m = std::fs::metadata(&p).map_err(|e| pcfs::io_err(&e))?;
+            if m.is_dir() { Err("不能读取文件夹".to_string()) } else { Ok((p, m)) }
+        });
+        let (p, meta) = match checked {
+            Ok(v) => v,
+            Err(e) => {
+                let _ = tx.send(Message::new(json!({"t":"fs.res","rid":rid,"ok":false,"error":e}))).await;
+                return;
+            }
+        };
+        let name = p.file_name().map(|n| n.to_string_lossy().into_owned()).unwrap_or_default();
+        let mtime = meta.modified().ok().and_then(|t| t.duration_since(std::time::UNIX_EPOCH).ok()).map(|d| d.as_millis() as u64);
+        let head = json!({"t":"fs.res","rid":rid,"ok":true,"size":meta.len(),"name":name,"m":mtime});
+        self.manage(&rid);
+        self.serving.lock().unwrap().insert(rid.clone());
+        if tx.send(Message::new(head)).await.is_ok() {
+            let out = Outbound { peer, path: p, name, size: meta.len() };
+            self.clone().stream_file(rid.clone(), out, tx).await;
+        }
+        self.serving.lock().unwrap().remove(&rid);
     }
 
     async fn stream_file(self: Arc<Self>, id: String, out: Outbound, tx: mpsc::Sender<Message>) {

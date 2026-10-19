@@ -81,10 +81,10 @@ function render() {
       .map(
         (p) => `<div class="item${p.connected && online.length > 1 ? " pickable" : ""}${p.id === phoneStatus?.id && online.length > 1 ? " picked" : ""}" data-pick="${esc(p.id)}">
           <div class="meta">
-            <div class="name">${esc(p.name)}${p.alias ? `<span class="model">${esc(p.model)}</span>` : ""}</div>
+            <div class="name">${esc(p.name)}${p.alias ? `<span class="model">${esc(p.model)}</span>` : ""}${p.app === "twinfile" ? `<span class="model">TwinFile</span>` : ""}</div>
             <div class="sub"><span class="dot ${p.connected ? "on" : ""}"></span>${p.connected ? "在线" : p.keyMismatch ? "配对信息不一致，请取消配对后重新扫码" : "离线"}${p.addr && !(p.keyMismatch && !p.connected) ? " · " + esc(p.addr) : ""}</div>
           </div>
-          ${p.connected ? `<button class="btn small" data-send="${esc(p.id)}">发送文件</button>
+          ${p.connected && !p.app ? `<button class="btn small" data-send="${esc(p.id)}">发送文件</button>
           <button class="icon-btn" title="停止手机服务" data-stop="${esc(p.id)}" data-name="${esc(p.name)}"><svg viewBox="0 0 24 24" style="width:15px;height:15px"><path d="M12 3v8M6.3 6.8a8 8 0 1011.4 0"/></svg></button>` : ""}
           <button class="icon-btn" title="备注" data-alias="${esc(p.id)}"><svg viewBox="0 0 24 24" style="width:15px;height:15px"><path d="M4 20h4L19 9l-4-4L4 16v4zM13.5 6.5l4 4"/></svg></button>
           <button class="icon-btn" title="取消配对" data-unpair="${esc(p.id)}" data-name="${esc(p.name)}"><svg viewBox="0 0 12 12"><path d="M2.5 2.5l7 7m0-7l-7 7"/></svg></button>
@@ -412,7 +412,8 @@ setTimeout(() => {
 let phoneStatus = null; // { id, ... } of the phone the panel shows
 let panelPeer = null;
 function panelTarget() {
-  const online = (state?.peers || []).filter((p) => p.connected);
+  // File-manager apps (TwinFile) have no phone controls.
+  const online = (state?.peers || []).filter((p) => p.connected && !p.app);
   return online.find((p) => p.id === panelPeer) || online[0];
 }
 $("peers").addEventListener("click", (e) => {

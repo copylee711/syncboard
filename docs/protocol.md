@@ -209,6 +209,39 @@ phone confirms a PC's cancel with its own `file.cancel`.
 **Push** (PC → phone): a `file.offer` with `dir` set. The phone accepts it whatever its
 自动接收文件 setting is (the user chose the folder on the PC) and stores it there under a free name.
 
+### 8.1 The other way: a device browses the PC
+
+File-manager apps that pair like a phone (TwinFile) send the same `fs` requests to the PC.
+They add `"app":"twinfile"` to their `pair` frame (§2); the PC stores it with the peer and then
+sends them no clipboard, doesn't try adb on them and hides the phone controls. Older PCs ignore
+the field.
+
+The PC answers only while 允许已配对设备浏览这台电脑的文件 is on (off by default); otherwise
+every request gets `ok:false` with an explanation, and uploads get `file.reject`.
+
+Paths are the PC's native absolute paths (`C:\Users\a`). UNC paths (`\\server\x`), device paths
+(`\\?\`, `\\.\`) and `..` are refused.
+
+| `op` | args | reply |
+|---|---|---|
+| `roots` | — | `home`, `volumes`: `[{name, path, total, free, kind}]`, `kind` = `drive` or `place` (Desktop, Downloads…) |
+| `list` | `path`, `offset` | body: JSON `[{n, d, s, m, h}]`; `s` is 0 for folders, `h` = hidden/system; sorted by name; `next` as in §8 |
+| `walk` | `path`, `offset` | as in §8 |
+| `stat` | `path` | `e`: `{n, d, s, m, h}`, or `null` when the path doesn't exist |
+| `mkdir` | `path` | |
+| `create` | `path` | new empty file; fails if the name is taken |
+| `rename` | `path`, `to` | `to` is a full path; fails if it exists (a case-only change is fine) |
+| `delete` | `paths` | to the Recycle Bin; drive roots are refused |
+| `copy` / `move` | `paths`, `dir` | names that exist get ` (n)` appended |
+| `setmtime` | `path`, `m` (ms) | |
+| `thumb` | `path`, `px` | body: JPEG from Explorer's thumbnail handlers; `ok:false` for files that only have an icon |
+| `pull` | `path` | `fs.res` with `size`, `name`, `m`, then `chunk`s and `end` with `id` = `rid`. The device stops it with `file.cancel`; the PC confirms with its own `file.cancel` |
+
+**Upload** (device → PC folder): `file.offer` with `dir` and optionally `mtime` (ms). The PC
+accepts into `dir` under a free name, or rejects with `file.reject` + `error`. After a good
+`end` it answers `{"t":"file.done","id","path"}` (where the file landed); after a hash mismatch
+`{"t":"file.failed","id","error"}`. Uploads without `dir` keep their old meaning (§4).
+
 ## 9. Phone controls
 
 The same request format as §8, with these ops (no body):

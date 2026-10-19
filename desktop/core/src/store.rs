@@ -16,6 +16,10 @@ pub struct Peer {
     /// The user's own name for this device (备注), shown instead of `name`.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub alias: Option<String>,
+    /// Set for file-manager apps that pair like a phone ("twinfile"); None for the
+    /// SyncBoard phone service. They get no clipboard and no adb handling.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub app: Option<String>,
 }
 
 impl Peer {
@@ -48,6 +52,8 @@ pub struct Settings {
     pub skip_running_apps: bool,
     /// Shrink images from the phone to what Windows clipboard history (Win+V) keeps.
     pub fit_clipboard_history: bool,
+    /// Let paired devices (TwinFile) browse and change this PC's files.
+    pub allow_remote_browse: bool,
 }
 
 impl Default for Settings {
@@ -65,6 +71,7 @@ impl Default for Settings {
             muted_apps: Vec::new(),
             skip_running_apps: true,
             fit_clipboard_history: false,
+            allow_remote_browse: false,
         }
     }
 }

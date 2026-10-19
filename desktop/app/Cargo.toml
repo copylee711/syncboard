@@ -19,8 +19,10 @@ qrcode = { version = "0.14", default-features = false, features = ["svg"] }
 winreg = "0.55"
 miniz_oxide = "0.8"
 base64 = "0.22"
-windows = { version = "0.61", features = ["Foundation", "Networking_Connectivity", "Networking_NetworkOperators", "UI_Notifications", "Data_Xml_Dom", "Win32_UI_Shell", "Win32_UI_Shell_PropertiesSystem", "Win32_System_Com", "Win32_System_Com_StructuredStorage", "Win32_System_Variant", "Win32_Storage_EnhancedStorage"] }
-windows-sys = { version = "0.59", features = ["Win32_System_Threading", "Win32_System_ProcessStatus", "Win32_System_Diagnostics_ToolHelp", "Win32_Foundation", "Win32_UI_Shell", "Win32_System_Com"] }
+# JPEG thumbnails of this PC's files for paired devices browsing it.
+image = { version = "0.25", default-features = false, features = ["jpeg"] }
+windows = { version = "0.61", features = ["Foundation", "Networking_Connectivity", "Networking_NetworkOperators", "UI_Notifications", "Data_Xml_Dom", "Win32_UI_Shell", "Win32_UI_Shell_PropertiesSystem", "Win32_System_Com", "Win32_System_Com_StructuredStorage", "Win32_System_Variant", "Win32_Storage_EnhancedStorage", "Win32_Foundation", "Win32_Graphics_Gdi"] }
+windows-sys = { version = "0.59", features = ["Win32_System_Threading", "Win32_System_ProcessStatus", "Win32_System_Diagnostics_ToolHelp", "Win32_Foundation", "Win32_UI_Shell", "Win32_System_Com", "Win32_Storage_FileSystem"] }
 
 [features]
 default = ["custom-protocol"]

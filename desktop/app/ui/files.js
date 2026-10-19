@@ -105,7 +105,8 @@ let phoneRoots = null;
 let queueItems = [];
 
 function connectedPeers() {
-  return (state?.peers || []).filter((p) => p.connected);
+  // TwinFile browses this PC; it doesn't serve its own files to it.
+  return (state?.peers || []).filter((p) => p.connected && !p.app);
 }
 
 class Pane {

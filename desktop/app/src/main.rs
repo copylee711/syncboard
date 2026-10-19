@@ -4,6 +4,7 @@ mod adb;
 mod files;
 mod hotspot;
 mod notify;
+mod pcfs_host;
 mod system;
 mod update;
 
@@ -95,7 +96,7 @@ fn state_json(st: &App) -> Value {
         .into_iter()
         .map(|p| {
             let c = connected.iter().find(|(id, ..)| *id == p.id);
-            json!({"id": p.id, "name": p.display_name(), "model": p.name, "alias": p.alias, "platform": p.platform,
+            json!({"id": p.id, "name": p.display_name(), "model": p.name, "alias": p.alias, "platform": p.platform, "app": p.app,
                    "connected": c.is_some(), "addr": c.map(|c| c.2.clone()).or(p.last_addr),
                    "keyMismatch": st.engine.key_mismatch(&p.id)})
         })
@@ -758,8 +759,10 @@ fn spawn_auto_adb(app: AppHandle) {
             std::thread::sleep(Duration::from_secs(5));
             let st = app.state::<App>();
             let s = st.engine.with_store(|s| s.config.settings.clone());
-            let peers = st.engine.peers();
-            let all_online = st.engine.connected().len() >= peers.len();
+            // File-manager apps (TwinFile) have no phone service to start over adb.
+            let peers: Vec<_> = st.engine.peers().into_iter().filter(|p| p.app.is_none()).collect();
+            let connected = st.engine.connected();
+            let all_online = peers.iter().all(|p| connected.iter().any(|c| c.0 == p.id));
             if !s.auto_adb || peers.is_empty() || all_online || st.setup_cancel.lock().unwrap().is_some() {
                 started.clear();
                 continue;
@@ -800,6 +803,7 @@ fn main() {
             let (engine, sync) = tauri::async_runtime::block_on(async {
                 let (tx, rx) = tokio::sync::mpsc::unbounded_channel();
                 let engine = Engine::start(&config_dir(), PORT, tx).await?;
+                engine.set_fs_host(Arc::new(pcfs_host::WinFsHost));
                 let h = handle.clone();
                 let sync = syncboard_core::sync::start(engine.clone(), rx, move |ev| on_engine_event(&h, ev));
                 Ok::<_, anyhow_like::Error>((engine, sync))

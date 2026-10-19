@@ -80,7 +80,7 @@ pub fn local_places() -> Value {
     json!({"home": home, "places": places, "drives": drives})
 }
 
-fn known_folder(id: &windows_sys::core::GUID) -> Option<String> {
+pub(crate) fn known_folder(id: &windows_sys::core::GUID) -> Option<String> {
     use windows_sys::Win32::System::Com::CoTaskMemFree;
     use windows_sys::Win32::UI::Shell::SHGetKnownFolderPath;
     unsafe {
@@ -146,7 +146,7 @@ pub async fn local_delete(paths: Vec<String>) -> Result<(), String> {
     tauri::async_runtime::spawn_blocking(move || recycle(&paths)).await.map_err(|e| e.to_string())?
 }
 
-fn recycle(paths: &[String]) -> Result<(), String> {
+pub(crate) fn recycle(paths: &[String]) -> Result<(), String> {
     use windows_sys::Win32::UI::Shell::{
         SHFileOperationW, FOF_ALLOWUNDO, FOF_NOCONFIRMATION, FOF_NOERRORUI, FOF_SILENT, FO_DELETE, SHFILEOPSTRUCTW,
     };
