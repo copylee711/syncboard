@@ -115,9 +115,18 @@ pub fn cleanup() {
     }
 }
 
+/// How the new exe got in place.
+pub enum Installed {
+    /// Swapped in by us; the caller starts it once this process exits.
+    Swapped(PathBuf),
+    /// The exe's folder needs admin rights (e.g. under Program Files): an elevated helper
+    /// replaces it after this process exits and starts it itself.
+    Elevated,
+}
+
 /// Downloads `version`, checks it against the release's SHA256SUMS.txt and swaps it in
 /// for the running exe (Windows allows renaming a running exe). The caller restarts.
-pub fn install(version: &str, progress: impl Fn(u64, u64)) -> Result<PathBuf, String> {
+pub fn install(version: &str, progress: impl Fn(u64, u64)) -> Result<Installed, String> {
     let name = format!("SyncBoard-{version}-windows-x64.exe");
     let base = format!("{REPO}/releases/download/v{version}");
     let sums = curl(&["-L", "-m", "30", &format!("{base}/SHA256SUMS.txt")]).map_err(|e| format!("下载校验文件失败：{e}"))?;
@@ -138,14 +147,66 @@ pub fn install(version: &str, progress: impl Fn(u64, u64)) -> Result<PathBuf, St
     let exe = std::env::current_exe().map_err(|e| e.to_string())?;
     let old = old_exe(&exe);
     let _ = std::fs::remove_file(&old);
-    std::fs::rename(&exe, &old).map_err(|e| format!("无法替换程序文件：{e}"))?;
+    if let Err(e) = std::fs::rename(&exe, &old) {
+        if e.kind() == std::io::ErrorKind::PermissionDenied {
+            elevated_swap(&tmp, &exe)?;
+            return Ok(Installed::Elevated);
+        }
+        return Err(format!("无法替换程序文件：{e}"));
+    }
     // Copy, not rename: the temp dir may be on another drive.
     if let Err(e) = std::fs::copy(&tmp, &exe) {
         let _ = std::fs::rename(&old, &exe);
         return Err(format!("无法写入新版本：{e}"));
     }
     let _ = std::fs::remove_file(&tmp);
-    Ok(exe)
+    Ok(Installed::Swapped(exe))
+}
+
+/// The helper: wait for `pid` to exit, copy `new` over `exe`, then (with `relaunch`) start it.
+fn write_swap_script(script: &Path, pid: u32, new: &Path, exe: &Path, relaunch: bool) -> Result<(), String> {
+    let mut body = format!(
+        "Wait-Process -Id {pid} -Timeout 30 -ErrorAction SilentlyContinue\r\n\
+         for ($i = 0; $i -lt 20; $i++) {{ try {{ Copy-Item -LiteralPath {new} -Destination {exe} -Force -ErrorAction Stop; break }} catch {{ Start-Sleep -Milliseconds 500 }} }}\r\n\
+         Remove-Item -LiteralPath {new} -ErrorAction SilentlyContinue\r\n",
+        new = ps_quote(new),
+        exe = ps_quote(exe),
+    );
+    if relaunch {
+        // explorer starts it as the signed-in user, not elevated like this script.
+        body += &format!("& explorer.exe {}\r\n", ps_quote(exe));
+    }
+    // BOM so Windows PowerShell reads non-ASCII paths as UTF-8.
+    std::fs::write(script, format!("\u{feff}{body}")).map_err(|e| e.to_string())
+}
+
+/// A path as a single-quoted PowerShell string.
+fn ps_quote(p: &Path) -> String {
+    format!("'{}'", p.display().to_string().replace('\'', "''"))
+}
+
+/// Asks for admin rights (UAC) to run a helper that waits for this process to exit, copies
+/// `new` over `exe` and starts it again through explorer, so it runs unelevated as before.
+fn elevated_swap(new: &Path, exe: &Path) -> Result<(), String> {
+    let script = std::env::temp_dir().join("syncboard-update.ps1");
+    write_swap_script(&script, std::process::id(), new, exe, true)?;
+    // Start-Process joins -ArgumentList with spaces, so the script path carries its own quotes.
+    let launch = format!(
+        "$ErrorActionPreference = 'Stop'; Start-Process powershell -Verb RunAs -WindowStyle Hidden \
+         -ArgumentList '-NoProfile','-ExecutionPolicy','Bypass','-WindowStyle','Hidden','-File','\"{}\"'",
+        script.display().to_string().replace('\'', "''"),
+    );
+    let ok = Command::new("powershell")
+        .args(["-NoProfile", "-NonInteractive", "-WindowStyle", "Hidden", "-Command", &launch])
+        .creation_flags(CREATE_NO_WINDOW)
+        .status()
+        .map(|s| s.success())
+        .unwrap_or(false);
+    if !ok {
+        let _ = std::fs::remove_file(new);
+        return Err("程序装在需要管理员权限的文件夹里，请在弹出的窗口中允许后再更新".into());
+    }
+    Ok(())
 }
 
 /// Size of what `url` finally redirects to (0 when unknown).
@@ -225,6 +286,30 @@ mod tests {
         assert_eq!(parse_proxy("http=a:1;https=b:2").as_deref(), Some("http://b:2"));
         assert_eq!(parse_proxy("socks=c:3").as_deref(), Some("socks5h://c:3"));
         assert_eq!(parse_proxy(""), None);
+    }
+
+    #[test]
+    fn swap_script_replaces_exe_with_odd_paths() {
+        let dir = std::env::temp_dir().join("sb update 测试 it's");
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        let new = dir.join("new.part");
+        let exe = dir.join("Sync Board.exe");
+        std::fs::write(&new, b"new").unwrap();
+        std::fs::write(&exe, b"old").unwrap();
+        let script = dir.join("swap.ps1");
+        // A pid that is not running: the wait returns at once.
+        write_swap_script(&script, 999_999, &new, &exe, false).unwrap();
+        let ok = Command::new("powershell")
+            .args(["-NoProfile", "-NonInteractive", "-ExecutionPolicy", "Bypass", "-File"])
+            .arg(&script)
+            .status()
+            .unwrap()
+            .success();
+        assert!(ok);
+        assert_eq!(std::fs::read(&exe).unwrap(), b"new");
+        assert!(!new.exists());
+        let _ = std::fs::remove_dir_all(&dir);
     }
 
     #[test]

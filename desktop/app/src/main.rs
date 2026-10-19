@@ -285,12 +285,15 @@ async fn check_update() -> Result<Value, String> {
 #[tauri::command]
 async fn install_update(app: AppHandle, version: String) -> Result<(), String> {
     let ui = app.clone();
-    let exe = tauri::async_runtime::spawn_blocking(move || {
+    let installed = tauri::async_runtime::spawn_blocking(move || {
         update::install(&version, |done, total| notify_ui(&ui, "updateProgress", json!({"done": done, "total": total})))
     })
     .await
     .map_err(|e| e.to_string())??;
-    update::relaunch_after_exit(&exe);
+    // After an elevated swap the helper starts the new exe itself.
+    if let update::Installed::Swapped(exe) = installed {
+        update::relaunch_after_exit(&exe);
+    }
     app.exit(0);
     Ok(())
 }
