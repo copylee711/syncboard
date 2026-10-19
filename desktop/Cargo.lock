@@ -3681,7 +3681,7 @@ dependencies = [
 
 [[package]]
 name = "syncboard"
-version = "0.4.0"
+version = "0.4.1"
 dependencies = [
  "base64 0.22.1",
  "image",
@@ -3702,7 +3702,7 @@ dependencies = [
 
 [[package]]
 name = "syncboard-core"
-version = "0.4.0"
+version = "0.4.1"
 dependencies = [
  "aes-gcm",
  "anyhow",
