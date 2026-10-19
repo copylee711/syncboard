@@ -180,6 +180,13 @@ fn write_swap_script(script: &Path, pid: u32, new: &Path, exe: &Path, relaunch: 
     std::fs::write(script, format!("\u{feff}{body}")).map_err(|e| e.to_string())
 }
 
+/// Windows PowerShell by full path: PATH may not have it (it lacks it in some test runs).
+fn powershell() -> PathBuf {
+    let root = std::env::var_os("SystemRoot").map(PathBuf::from).unwrap_or_else(|| PathBuf::from(r"C:\Windows"));
+    let p = root.join(r"System32\WindowsPowerShell\v1.0\powershell.exe");
+    if p.is_file() { p } else { PathBuf::from("powershell") }
+}
+
 /// A path as a single-quoted PowerShell string.
 fn ps_quote(p: &Path) -> String {
     format!("'{}'", p.display().to_string().replace('\'', "''"))
@@ -192,11 +199,12 @@ fn elevated_swap(new: &Path, exe: &Path) -> Result<(), String> {
     write_swap_script(&script, std::process::id(), new, exe, true)?;
     // Start-Process joins -ArgumentList with spaces, so the script path carries its own quotes.
     let launch = format!(
-        "$ErrorActionPreference = 'Stop'; Start-Process powershell -Verb RunAs -WindowStyle Hidden \
+        "$ErrorActionPreference = 'Stop'; Start-Process {ps} -Verb RunAs -WindowStyle Hidden \
          -ArgumentList '-NoProfile','-ExecutionPolicy','Bypass','-WindowStyle','Hidden','-File','\"{}\"'",
         script.display().to_string().replace('\'', "''"),
+        ps = ps_quote(&powershell()),
     );
-    let ok = Command::new("powershell")
+    let ok = Command::new(powershell())
         .args(["-NoProfile", "-NonInteractive", "-WindowStyle", "Hidden", "-Command", &launch])
         .creation_flags(CREATE_NO_WINDOW)
         .status()
@@ -270,7 +278,7 @@ pub fn relaunch_after_exit(exe: &Path) {
         std::process::id(),
         exe.display().to_string().replace('\'', "''"),
     );
-    let _ = Command::new("powershell")
+    let _ = Command::new(powershell())
         .args(["-NoProfile", "-NonInteractive", "-WindowStyle", "Hidden", "-Command", &ps])
         .creation_flags(CREATE_NO_WINDOW)
         .spawn();
@@ -300,7 +308,7 @@ mod tests {
         let script = dir.join("swap.ps1");
         // A pid that is not running: the wait returns at once.
         write_swap_script(&script, 999_999, &new, &exe, false).unwrap();
-        let ok = Command::new("powershell")
+        let ok = Command::new(powershell())
             .args(["-NoProfile", "-NonInteractive", "-ExecutionPolicy", "Bypass", "-File"])
             .arg(&script)
             .status()

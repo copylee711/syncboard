@@ -288,3 +288,28 @@ over the local IPC socket, and the daemon sends:
 
 Ongoing, foreground-service and group-summary notifications, and updates that change nothing,
 are skipped.
+
+## 12. Other apps on the phone (TwinFile)
+
+Not part of the wire protocol: the phone service's local port (127.0.0.1:53318, frames are
+u32 length + JSON) also serves apps the user approved, so they can use its PC sessions and its
+shell-user rights without pairing again.
+
+- **Approval.** The app starts `app.syncboard.action.AUTHORIZE_CLIENT` for a result. SyncBoard
+  reads the caller from `getCallingPackage()`, asks the user, and tells the daemon
+  `{"cmd":"authorizeClient","pkg","uid"}`. The daemon keeps `pkg → uid` in its config and
+  accepts a connection when its uid (from `/proc/net/tcp`) still belongs to that package.
+  Revoked in 设置 → 已授权的应用 (`revokeClient`).
+- **Unapproved callers** get `{"event":"denied"}` and the connection closes.
+- **Requests** (one per connection; raw data travels as u32 length + bytes, length 0 ends a stream):
+
+| Request | Reply |
+|---|---|
+| `{"cmd":"hello"}` | `{"event":"hello","version"}` |
+| `{"cmd":"pcs"}` | `{"pcs":[{id,name}]}`, PCs with a live session |
+| `{"cmd":"pcFs","pc","req":{op,…},"timeout"}` | the PC's `fs.res` header, then u32 + body (§8.1) |
+| `{"cmd":"pcPull","pc","path"}` | `{"ok","size"}`, chunks, empty chunk, `{"ok","error"}` after the hash check |
+| `{"cmd":"pcPush","pc","dir","name","size","mtime"}` | `{"ok"}` once the PC accepts; the app sends chunks and an empty one; `{"ok","error"}` after `file.done`/`file.failed` |
+| `{"cmd":"exec","argv":[…],"stdin"}` | `{"ok"}`, stdin chunks from the app when asked, stdout chunks, empty chunk, `{"exit","err"}` |
+
+The PC still decides about browsing (`allow_remote_browse`, §8.1).

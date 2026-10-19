@@ -52,12 +52,17 @@ function render() {
   $("syncLabel").textContent = s.paused ? "同步已暂停" : "同步已开启";
 
   const online = s.peers.filter((p) => p.connected);
+  // Phones running the SyncBoard app; file-manager apps (TwinFile) only browse this PC.
+  const phones = online.filter((p) => !p.app);
+  const appOnly = online.length > 0 && phones.length === 0;
   const dot = $("statusDot");
   if (online.length) {
     dot.className = "dot on";
     $("statusLabel").textContent = online.length === 1 ? `已连接 · ${online[0].addr || ""}` : `已连接 ${online.length} 台设备`;
     $("statusTitle").textContent = online.length === 1 ? online[0].name : online.map((p) => p.name).join("、");
-    $("statusSub").textContent = s.paused ? "同步已暂停，点右上角恢复" : "复制的文字和图片会自动出现在另一端";
+    $("statusSub").textContent = appOnly
+      ? "TwinFile 可以浏览这台电脑的文件。剪贴板同步、发送文件、文件管理和手机控制需要手机上安装 SyncBoard App"
+      : s.paused ? "同步已暂停，点右上角恢复" : "复制的文字和图片会自动出现在另一端";
   } else if (s.peers.length) {
     dot.className = "dot wait";
     $("statusLabel").textContent = "未连接";
@@ -69,9 +74,10 @@ function render() {
     $("statusTitle").textContent = "还没有配对的手机";
     $("statusSub").textContent = "点「添加手机」，用手机上的 SyncBoard 扫码";
   }
-  $("sendBtn").disabled = online.length === 0;
+  $("sendBtn").disabled = phones.length === 0;
+  $("filesBtn").disabled = appOnly;
   // The panel controls the phone picked in the device list (the first online one by default).
-  renderPhone(panelTarget());
+  renderPhone(panelTarget(), appOnly);
 
   const peers = $("peers");
   if (!s.peers.length) {
@@ -82,8 +88,9 @@ function render() {
         (p) => `<div class="item${p.connected && online.length > 1 ? " pickable" : ""}${p.id === phoneStatus?.id && online.length > 1 ? " picked" : ""}" data-pick="${esc(p.id)}">
           <div class="meta">
             <div class="name">${esc(p.name)}${p.alias ? `<span class="model">${esc(p.model)}</span>` : ""}${p.app === "twinfile" ? `<span class="model">TwinFile</span>` : ""}</div>
-            <div class="sub"><span class="dot ${p.connected ? "on" : ""}"></span>${p.connected ? "在线" : p.keyMismatch ? "配对信息不一致，请取消配对后重新扫码" : "离线"}${p.addr && !(p.keyMismatch && !p.connected) ? " · " + esc(p.addr) : ""}</div>
+            <div class="sub"><span class="dot ${p.connected ? "on" : ""}"></span>${p.connected && p.app ? "在线 · 只能浏览电脑文件，其他功能需要 SyncBoard App" : p.connected ? "在线" : p.keyMismatch ? "配对信息不一致，请取消配对后重新扫码" : "离线"}${p.addr && !(p.keyMismatch && !p.connected) ? " · " + esc(p.addr) : ""}</div>
           </div>
+          ${p.connected && p.app ? `<button class="btn small" disabled>发送文件</button>` : ""}
           ${p.connected && !p.app ? `<button class="btn small" data-send="${esc(p.id)}">发送文件</button>
           <button class="icon-btn" title="停止手机服务" data-stop="${esc(p.id)}" data-name="${esc(p.name)}"><svg viewBox="0 0 24 24" style="width:15px;height:15px"><path d="M12 3v8M6.3 6.8a8 8 0 1011.4 0"/></svg></button>` : ""}
           <button class="icon-btn" title="备注" data-alias="${esc(p.id)}"><svg viewBox="0 0 24 24" style="width:15px;height:15px"><path d="M4 20h4L19 9l-4-4L4 16v4zM13.5 6.5l4 4"/></svg></button>
@@ -425,10 +432,15 @@ $("peers").addEventListener("click", (e) => {
 let statusTimer = null;
 let ringing = false;
 
-function renderPhone(p) {
-  $("phonePanel").hidden = !p;
+function renderPhone(p, appOnly = false) {
+  $("phonePanel").hidden = !p && !appOnly;
   if (!p) {
     phoneStatus = null;
+    if (appOnly) {
+      // Show what a SyncBoard phone would offer, greyed out.
+      $("phoneStats").innerHTML = `<span>手机上安装并启动 SyncBoard App 后，可以在这里查看电量、找手机、控制播放和锁屏</span>`;
+      $("phonePanel").querySelectorAll(".ctl").forEach((b) => (b.disabled = true));
+    }
     return;
   }
   if (phoneStatus?.id !== p.id) {
