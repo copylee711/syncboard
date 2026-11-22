@@ -180,7 +180,8 @@ class DaemonClient(private val context: Context) {
         }
 
         /** Streams one file to the PC through the daemon. Blocking. */
-        fun sendFile(context: Context, name: String, size: Long, input: InputStream, pc: String? = null): Boolean =
+        fun sendFile(context: Context, name: String, size: Long, input: InputStream, pc: String? = null,
+                     onBytes: (Long) -> Unit = {}): Boolean =
             runCatching {
                 Socket().use { s ->
                     s.connect(InetSocketAddress("127.0.0.1", PORT), 1000)
@@ -194,6 +195,7 @@ class DaemonClient(private val context: Context) {
                         if (n < 0) break
                         o.write(buf, 0, n)
                         left -= n
+                        onBytes(size - left)
                     }
                     o.flush()
                     val r = readPlain(DataInputStream(BufferedInputStream(s.getInputStream())))

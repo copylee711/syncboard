@@ -81,6 +81,8 @@ class Engine(
             bridge.mediaUriOf(f.path)
         }
         if (known != null) bridge.setMediaImage(known.first, known.second) else bridge.setImage(png)
+        // Paused, or images not synced: it stays on the phone.
+        if (config.settings.paused || !config.settings.syncImages) return@MediaWatcher
         val n = pushImage(png)
         Log.i(TAG, "new image copied (${png.size} bytes, $n PC(s))")
         trimSoon()
@@ -280,8 +282,24 @@ class Engine(
         // taps; the app can still switch them on for a restart.
         val keys = listOf("adb_wifi_enabled", "development_settings_enabled") +
             if (android.os.Build.MANUFACTURER.equals("vivo", ignoreCase = true)) listOf("vivo_development_show") else emptyList()
-        for (key in keys) {
-            runCatching { ProcessBuilder("settings", "put", "global", key, "0").start().waitFor() }
+        // Some ROMs (HyperOS) refuse these even to shell: check, and say so (issue #1).
+        val failed = keys.filter { key ->
+            runCatching { ProcessBuilder("settings", "put", "global", key, "0").redirectErrorStream(true).start().waitFor() }
+            val now = runCatching {
+                ProcessBuilder("settings", "get", "global", key).start().inputStream.bufferedReader().readText().trim()
+            }.getOrDefault("")
+            now != "0" && now != "null" && key != "vivo_development_show"
+        }
+        if (failed.isEmpty()) {
+            Log.i(TAG, "developer options switched off")
+            emit(JSONObject().put("event", "devOptionsOff").put("ok", true))
+        } else {
+            Log.w(TAG, "could not switch off $failed")
+            emit(JSONObject().put("event", "devOptionsOff").put("ok", false))
+            val m = Message.of("t" to "notif", "pkg" to Main.PACKAGE, "app" to "SyncBoard", "title" to "未能自动关闭调试",
+                "text" to "这台手机不允许 SyncBoard 关闭开发者选项/无线调试，请在手机设置里手动关闭。手机服务不受影响。",
+                "ts" to System.currentTimeMillis())
+            broadcast { it.writer.write(m) }
         }
     }.start()
 

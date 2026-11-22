@@ -1,6 +1,6 @@
 [package]
 name = "syncboard"
-version = "0.4.2"
+version = "0.4.3"
 edition = "2021"
 
 [build-dependencies]
@@ -21,7 +21,7 @@ miniz_oxide = "0.8"
 base64 = "0.22"
 # JPEG thumbnails of this PC's files for paired devices browsing it.
 image = { version = "0.25", default-features = false, features = ["jpeg"] }
-windows = { version = "0.61", features = ["Foundation", "Networking_Connectivity", "Networking_NetworkOperators", "UI_Notifications", "Data_Xml_Dom", "Win32_UI_Shell", "Win32_UI_Shell_PropertiesSystem", "Win32_System_Com", "Win32_System_Com_StructuredStorage", "Win32_System_Variant", "Win32_Storage_EnhancedStorage", "Win32_Foundation", "Win32_Graphics_Gdi"] }
+windows = { version = "0.61", features = ["Foundation", "Networking_Connectivity", "Networking_NetworkOperators", "UI_Notifications", "Data_Xml_Dom", "Win32_UI_Shell", "Win32_UI_Shell_PropertiesSystem", "Win32_System_Com", "Win32_System_Com_StructuredStorage", "Win32_System_Variant", "Win32_Storage_EnhancedStorage", "Win32_Foundation", "Win32_Graphics_Gdi", "Win32_System_Ole", "Win32_System_DataExchange", "Win32_System_SystemServices", "Win32_UI_Shell_Common", "Win32_UI_Input_KeyboardAndMouse"] }
 windows-sys = { version = "0.59", features = ["Win32_System_Threading", "Win32_System_ProcessStatus", "Win32_System_Diagnostics_ToolHelp", "Win32_Foundation", "Win32_UI_Shell", "Win32_System_Com", "Win32_Storage_FileSystem"] }
 
 [features]

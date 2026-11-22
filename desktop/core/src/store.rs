@@ -33,6 +33,8 @@ impl Peer {
 pub struct Settings {
     pub sync_text: bool,
     pub sync_images: bool,
+    /// Send this PC's clipboard to the phone; off = one way, phone → PC only.
+    pub send_to_phone: bool,
     pub auto_accept_files: bool,
     /// None = Downloads\SyncBoard.
     pub download_dir: Option<PathBuf>,
@@ -61,6 +63,7 @@ impl Default for Settings {
         Settings {
             sync_text: true,
             sync_images: true,
+            send_to_phone: true,
             auto_accept_files: true,
             download_dir: None,
             auto_adb: true,

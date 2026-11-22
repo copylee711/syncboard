@@ -60,8 +60,9 @@ class MediaWatcher(
             worker.execute { lastId = -1 }
             return
         }
-        // Only images added from now on.
-        worker.execute { if (lastId < 0) lastId = maxId() }
+        // Only images added from now on. Before the first unlock after a reboot MediaStore
+        // isn't usable yet; [scan] retries until it is (issue #2).
+        worker.execute { initLastId() }
 
         if (t.screenshots) {
             for (dir in screenshotFolders()) {
@@ -92,15 +93,36 @@ class MediaWatcher(
         Log.i(TAG, "watching new images: $t (observer ${if (registered) "on" else "off"})")
     }
 
-    private fun maxId(): Long = runCatching {
+    /** Sets [lastId] to MediaStore's newest id once the user is unlocked and MediaStore answers. */
+    private fun initLastId() {
+        if (lastId >= 0) return
+        if (!userUnlocked()) return
+        val id = maxId() ?: return
+        lastId = id
+        Log.i(TAG, "new images from MediaStore id $id on")
+    }
+
+    private fun userUnlocked(): Boolean = runCatching {
+        ShellContext.init().getSystemService(android.os.UserManager::class.java)?.isUserUnlocked
+    }.getOrNull() ?: true
+
+    /**
+     * MediaStore's newest image id, 0 when it has none; null when it can't be read (locked
+     * after a reboot, MediaStore still starting), so the caller tries again later rather
+     * than treating every existing image as new.
+     */
+    private fun maxId(): Long? = runCatching {
         val args = Bundle().apply {
-            putStringArray(ContentResolver.QUERY_ARG_SORT_COLUMNS, arrayOf(BaseColumns._ID))
-            putInt(ContentResolver.QUERY_ARG_SORT_DIRECTION, ContentResolver.QUERY_SORT_DIRECTION_DESCENDING)
+            putString(ContentResolver.QUERY_ARG_SQL_SORT_ORDER, "${BaseColumns._ID} DESC")
             putInt(ContentResolver.QUERY_ARG_LIMIT, 1)
         }
-        resolver.query(MediaStore.Images.Media.EXTERNAL_CONTENT_URI, arrayOf(BaseColumns._ID), args, null)
-            ?.use { c -> if (c.moveToFirst()) c.getLong(0) else 0L } ?: 0L
-    }.onFailure { Log.w(TAG, "MediaStore max id failed", it) }.getOrDefault(0L)
+        resolver.query(MediaStore.Images.Media.EXTERNAL_CONTENT_URI, arrayOf(BaseColumns._ID), args, null)?.use { c ->
+            // Some Android 10 ROMs ignore the sort and limit arguments: take the largest anyway.
+            var max = 0L
+            while (c.moveToNext()) max = maxOf(max, c.getLong(0))
+            max
+        }
+    }.onFailure { Log.w(TAG, "MediaStore max id failed", it) }.getOrNull()
 
     private val power by lazy { runCatching { ShellContext.init().getSystemService(android.os.PowerManager::class.java) }.getOrNull() }
     /** Images MediaStore lists but whose file isn't readable yet: id → first seen (ms). */
@@ -109,38 +131,54 @@ class MediaWatcher(
     /** Handles images added since the last scan. Runs on [worker]. */
     private fun scan() {
         val t = targets
-        if (!t.any || lastId < 0) return
+        if (!t.any) return
+        if (lastId < 0) { initLastId(); return }
         // No screenshots or photos are taken with the screen off; they are picked up once it is on.
         if (runCatching { power?.isInteractive }.getOrNull() == false) return
         val uri = MediaStore.Images.Media.EXTERNAL_CONTENT_URI
         @Suppress("DEPRECATION")
         val cols = arrayOf(BaseColumns._ID, MediaStore.MediaColumns.DATA, MediaStore.MediaColumns.RELATIVE_PATH,
-            MediaStore.MediaColumns.IS_PENDING, MediaStore.MediaColumns.MIME_TYPE, MediaStore.MediaColumns.SIZE)
+            MediaStore.MediaColumns.IS_PENDING, MediaStore.MediaColumns.MIME_TYPE, MediaStore.MediaColumns.SIZE,
+            MediaStore.MediaColumns.DATE_ADDED, MediaStore.MediaColumns.DATE_MODIFIED)
         val rows = runCatching {
             resolver.query(uri, cols, "${BaseColumns._ID}>?", arrayOf(lastId.toString()), "${BaseColumns._ID} ASC")?.use { c ->
-                buildList { while (c.moveToNext()) add(Row(c.getLong(0), c.getString(1), c.getString(2), c.getInt(3) == 1, c.getString(4), c.getLong(5))) }
+                buildList {
+                    while (c.moveToNext()) add(Row(c.getLong(0), c.getString(1), c.getString(2), c.getInt(3) == 1,
+                        c.getString(4), c.getLong(5), c.getLong(6), c.getLong(7)))
+                }
             }.orEmpty()
         }.onFailure { Log.w(TAG, "MediaStore scan failed", it) }.getOrDefault(emptyList())
         // Stop short of an image still being written (pending, or published before its file
         // is complete, as some cameras do); it is looked at again on the next scans.
         val now = System.currentTimeMillis()
+        // Only images that are really new: not old ones MediaStore re-indexed, a cloud album
+        // restored, or anything left over when [lastId] couldn't be trusted (issue #2).
+        val oldest = now / 1000 - FRESH_SECS
         var stop = false
+        var newest: Pair<Row, File>? = null
         for (r in rows) {
-            val want = !r.pending && r.data != null && wanted(t, r.relPath)
+            // Switched off or changed meanwhile: leave the rest to the new configuration.
+            if (targets !== t) return
+            val fresh = r.added >= oldest && (r.modified == 0L || r.modified >= oldest)
+            val want = fresh && !r.pending && r.data != null && wanted(t, r.relPath)
             val f = r.data?.let(::File)
             val waiting = (r.pending || (want && !ready(f!!, r.size))) && now - notReady.getOrPut(r.id) { now } < GIVE_UP_MS
             if (waiting) { stop = true; continue }
             notReady.remove(r.id)
             if (!stop) lastId = r.id
-            if (want) handle(f!!, android.content.ContentUris.withAppendedId(uri, r.id), r.mime)
+            if (want) newest = r to f!!
         }
-        if (notReady.size > 50) notReady.clear()
+        // Only one image fits on a clipboard: a burst of several hands over the last one.
+        newest?.let { (r, f) -> handle(f, android.content.ContentUris.withAppendedId(uri, r.id), r.mime) }
+        // Forget images given up on or already past; keep the ones still being waited for.
+        notReady.entries.removeAll { (id, seen) -> id <= lastId || now - seen >= GIVE_UP_MS * 4 }
     }
 
     /** The file is there and, when MediaStore knows its size, fully written. */
     private fun ready(f: File, size: Long) = f.isFile && f.length().let { it > 0 && it >= size }
 
-    private class Row(val id: Long, val data: String?, val relPath: String?, val pending: Boolean, val mime: String?, val size: Long)
+    private class Row(val id: Long, val data: String?, val relPath: String?, val pending: Boolean, val mime: String?,
+                      val size: Long, val added: Long, val modified: Long)
 
     private fun wanted(t: Targets, relPath: String?): Boolean {
         val rel = relPath?.trimEnd('/') ?: return false
@@ -179,6 +217,8 @@ class MediaWatcher(
     companion object {
         private const val TAG = "SyncBoard"
         private const val GIVE_UP_MS = 30_000L
+        /** How old (seconds) an image may be and still count as new. */
+        private const val FRESH_SECS = 120L
         private val IMAGE = Regex(".*\\.(png|jpe?g|webp|heic)$", RegexOption.IGNORE_CASE)
         private val SCREENSHOT_WORDS = listOf("screenshot", "screen_shot", "截屏", "截图")
         private const val ROOT = "/storage/emulated/0"

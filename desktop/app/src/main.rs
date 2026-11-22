@@ -4,6 +4,7 @@ mod adb;
 mod files;
 mod hotspot;
 mod notify;
+mod osfiles;
 mod pcfs_host;
 mod system;
 mod update;
@@ -799,10 +800,13 @@ fn main() {
             files::open_files, files::local_places, files::local_list, files::local_mkdir, files::local_rename,
             files::local_delete, files::local_open, files::local_reveal, files::local_paste, files::phone_fs,
             files::phone_list, files::phone_thumb, files::phone_open, files::queue_state, files::queue_add,
-            files::queue_cancel, files::queue_clear, clip_history, clip_recopy, clip_history_clear, transfers_clear, set_alias, pick_download_dir, test_notification, notif_apps, set_app_muted
+            files::queue_cancel, files::queue_clear, clip_history, clip_recopy, clip_history_clear, transfers_clear, set_alias, pick_download_dir, test_notification, notif_apps, set_app_muted,
+            osfiles::stage_phone, osfiles::os_copy, osfiles::os_drag, osfiles::os_clip_files
         ])
         .setup(move |app| {
             let handle = app.handle().clone();
+            app.manage(osfiles::Staged::default());
+            std::thread::spawn(osfiles::clean_old);
             let (engine, sync) = tauri::async_runtime::block_on(async {
                 let (tx, rx) = tokio::sync::mpsc::unbounded_channel();
                 let engine = Engine::start(&config_dir(), PORT, tx).await?;

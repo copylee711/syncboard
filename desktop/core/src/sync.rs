@@ -54,6 +54,11 @@ impl ClipSync {
         }
     }
 
+    /// Whether this PC's own clipboard goes to the phone (not in one-way mode).
+    fn sends(&self, c: &ClipContent) -> bool {
+        self.allowed(c) && self.engine.with_store(|s| s.config.settings.send_to_phone)
+    }
+
     fn remember(&self, c: &ClipContent, from: &'static str) {
         let ClipContent::Text(t) = c else { return };
         if t.trim().is_empty() || t.chars().count() > HISTORY_CHARS {
@@ -82,7 +87,7 @@ impl ClipSync {
             w.write(c.clone());
         }
         self.remember(&c, "pc");
-        if self.allowed(&c) {
+        if self.sends(&c) {
             self.engine.send_clip(c);
         }
     }
@@ -99,7 +104,7 @@ impl ClipSync {
             *last = h;
         }
         self.remember(&c, "pc");
-        if self.allowed(&c) {
+        if self.sends(&c) {
             self.engine.send_clip(c);
         }
     }

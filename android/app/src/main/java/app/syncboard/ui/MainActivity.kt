@@ -168,6 +168,9 @@ private fun App(client: DaemonClient, scanAtStart: Boolean, theme: String, setTh
                 "fileDone" -> if (ev.optBoolean("incoming")) {
                     Toast.makeText(ctx, "已收到 ${ev.optString("name")}（下载/SyncBoard）", Toast.LENGTH_SHORT).show()
                 }
+                "devOptionsOff" -> if (!ev.optBoolean("ok")) {
+                    Toast.makeText(ctx, "未能自动关闭调试，请在设置里手动关闭（手机服务不受影响）", Toast.LENGTH_LONG).show()
+                }
                 "unpairedByPc" -> Toast.makeText(ctx, "「${ev.optString("name")}」已移除这台手机", Toast.LENGTH_LONG).show()
                 "fileFailed" -> Toast.makeText(ctx, "${ev.optString("name")}：${ev.optString("reason")}", Toast.LENGTH_SHORT).show()
             }

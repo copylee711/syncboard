@@ -779,6 +779,9 @@ let drag = null;
 function startDrag(pane, row, e) {
   const x0 = e.clientX;
   const y0 = e.clientY;
+  // Small phone files are pulled from the press on, so a drag out finds them ready.
+  const names = pane.sel.has(row.dataset.n) ? [...pane.sel] : [row.dataset.n];
+  const early = pane.isPhone ? stageNames(pane, names, STAGE_EARLY_MAX).catch(() => null) : null;
   const move = (ev) => {
     if (!drag) {
       if (Math.hypot(ev.clientX - x0, ev.clientY - y0) < 6) return;
@@ -788,7 +791,20 @@ function startDrag(pane, row, e) {
       ghost.textContent = pane.sel.size > 1 ? `${pane.sel.size} 项` : row.dataset.n;
       document.body.appendChild(ghost);
       drag = { pane, paths: pane.selPaths(), names: new Set(pane.sel), ghost, target: null };
+      // Phone files are pulled now, in case the drag leaves the window (to the desktop or an app).
+      if (pane.isPhone) drag.staged = early.then((p) => p || stageSel(pane, STAGE_DRAG_MAX)).catch(() => null);
       document.body.classList.add("dragging");
+    }
+    if (ev.clientX <= 0 || ev.clientY <= 0 || ev.clientX >= innerWidth - 1 || ev.clientY >= innerHeight - 1) {
+      document.removeEventListener("mousemove", move);
+      document.removeEventListener("mouseup", up);
+      const d = drag;
+      drag = null;
+      d.ghost.remove();
+      d.target?.el?.classList.remove("drop-target");
+      document.body.classList.remove("dragging");
+      dragOut(pane, d);
+      return;
     }
     drag.ghost.style.left = `${ev.clientX + 14}px`;
     drag.ghost.style.top = `${ev.clientY + 10}px`;
@@ -817,6 +833,67 @@ function startDrag(pane, row, e) {
   };
   document.addEventListener("mousemove", move);
   document.addEventListener("mouseup", up);
+}
+
+// ---------- files to other apps (Windows clipboard, drag out) ----------
+
+/** Phone files up to this size in all are pulled for a drag out / for the Windows clipboard. */
+const STAGE_DRAG_MAX = 300 * 1024 * 1024;
+const STAGE_COPY_MAX = 1024 * 1024 * 1024;
+const STAGE_EARLY_MAX = 20 * 1024 * 1024;
+/** Clipboard sequence number after our own copy: newer files there came from elsewhere. */
+let osSeq = 0;
+/** A drag out is running: its files dropping back on this window are ignored. */
+let osDragging = false;
+
+/** Local paths for the selection: as they are on the PC; temporary copies of phone files. */
+function stageSel(pane, max) {
+  return pane.isPhone ? stageNames(pane, [...pane.sel], max) : Promise.resolve(pane.selPaths());
+}
+
+async function stageNames(pane, names, max) {
+  const es = names.map((n) => pane.byName(n)).filter(Boolean);
+  if (!es.length || es.some((e) => e.d)) throw new Error("folder");
+  if (es.reduce((a, e) => a + (e.s || 0), 0) > max) throw new Error("too big");
+  return invoke("stage_phone", { peer, files: es.map((e) => ({ path: pane.join(e.n), size: e.s || 0, mtime: e.m || 0 })) });
+}
+
+async function dragOut(pane, d) {
+  osDragging = true;
+  try {
+    const paths = pane.isPhone ? await d.staged : d.paths;
+    if (!paths) return toast("手机上的文件夹或超过 300 MB 的文件请用「发送到电脑」", "error");
+    const ok = await call("os_drag", { paths });
+    if (!ok) toast("文件已准备好，再拖一次即可");
+  } catch {
+  } finally {
+    setTimeout(() => (osDragging = false), 500);
+  }
+}
+
+/** Copy also puts the files on the Windows clipboard, to paste in Explorer, chat apps, browsers. */
+async function osCopy(pane) {
+  const big = pane.isPhone && [...pane.sel].some((n) => (pane.byName(n)?.s || 0) > 4 * 1024 * 1024);
+  let paths;
+  try {
+    if (big) toast("正在从手机取文件…");
+    paths = await stageSel(pane, STAGE_COPY_MAX);
+  } catch (e) {
+    const why = e?.message === "folder" ? "手机上的文件夹" : e?.message === "too big" ? "超过 1 GB 的文件" : null;
+    return why && toast(`已复制，可在本窗口粘贴（${why}不能直接粘贴到其他应用）`);
+  }
+  try {
+    osSeq = await call("os_copy", { paths });
+    toast(`已复制 ${paths.length} 项，可粘贴到本窗口或其他应用`);
+  } catch {}
+}
+
+/** Ctrl+V: files copied elsewhere (Explorer...) since our own copy win, then our own clip. */
+async function pasteHere(pane) {
+  if (!pane.ready() || !pane.path) return;
+  const files = await invoke("os_clip_files", { since: osSeq }).catch(() => null);
+  if (files?.length) return paste({ side: "pc", paths: files, mv: false }, pane);
+  paste(clip, pane);
 }
 
 /**
@@ -1044,7 +1121,8 @@ async function remove(pane) {
 function setClip(pane, mv) {
   if (!pane.sel.size || pane.path === "") return;
   clip = { side: pane.side, paths: pane.selPaths(), mv };
-  toast(`已${mv ? "剪切" : "复制"} ${clip.paths.length} 项，到目标文件夹按 Ctrl+V`);
+  if (mv) toast(`已剪切 ${clip.paths.length} 项，到目标文件夹按 Ctrl+V`);
+  else osCopy(pane);
   Object.values(panes).forEach((p) => p.render());
 }
 
@@ -1097,7 +1175,7 @@ function showMenu(pane, x, y) {
       items.push(["cut", "剪切", () => setClip(pane, true), false, "Ctrl+X"]);
     }
   }
-  if (!atDrives) items.push(["paste", clip ? `粘贴 ${clip.paths.length} 项${clip.side !== pane.side ? `（从${clip.side === "pc" ? "电脑" : "手机"}）` : ""}` : "粘贴", () => paste(clip, pane), !clip || !pane.ready(), "Ctrl+V"]);
+  if (!atDrives) items.push(["paste", clip ? `粘贴 ${clip.paths.length} 项${clip.side !== pane.side ? `（从${clip.side === "pc" ? "电脑" : "手机"}）` : ""}` : "粘贴", () => pasteHere(pane), !pane.ready(), "Ctrl+V"]);
   if (n && !atDrives) {
     items.push("-");
     if (single?.d) {
@@ -1171,7 +1249,7 @@ document.addEventListener("keydown", (e) => {
     p.refreshSel();
   } else if (e.ctrlKey && (k === "c" || k === "C")) setClip(p, false);
   else if (e.ctrlKey && (k === "x" || k === "X")) setClip(p, true);
-  else if (e.ctrlKey && (k === "v" || k === "V")) paste(clip, p);
+  else if (e.ctrlKey && (k === "v" || k === "V")) pasteHere(p);
   else if (e.ctrlKey && (k === "f" || k === "F")) {
     e.preventDefault();
     p.r.search.focus();
@@ -1308,6 +1386,7 @@ listen("queue", (e) => renderQueue(e.payload));
 // Files dropped from Explorer: onto whichever pane is under the cursor.
 listen("tauri://drag-enter", () => {});
 listen("tauri://drag-over", (e) => {
+  if (osDragging) return;
   const pane = paneAt(e.payload.position);
   for (const p of Object.values(panes)) p.r.drop.hidden = p !== pane || !pane.ready() || !pane.path;
   if (pane) pane.r.drop.textContent = pane.isPhone ? `松开发送到手机：${pane.path}` : `松开复制到：${pane.path}`;
@@ -1315,6 +1394,7 @@ listen("tauri://drag-over", (e) => {
 listen("tauri://drag-leave", () => Object.values(panes).forEach((p) => (p.r.drop.hidden = true)));
 listen("tauri://drag-drop", (e) => {
   Object.values(panes).forEach((p) => (p.r.drop.hidden = true));
+  if (osDragging) return;
   const pane = paneAt(e.payload.position);
   const paths = e.payload.paths || [];
   if (!pane || !paths.length || !pane.ready() || !pane.path) return;

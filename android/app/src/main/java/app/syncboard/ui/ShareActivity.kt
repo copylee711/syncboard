@@ -4,16 +4,13 @@ import android.app.Activity
 import android.content.Intent
 import android.net.Uri
 import android.os.Bundle
-import android.view.Gravity
-import android.widget.LinearLayout
-import android.widget.ProgressBar
-import android.widget.TextView
+import android.provider.OpenableColumns
 import android.widget.Toast
 
 /**
- * "发送到电脑" in the share sheet. Text goes to the PC clipboard, files to Downloads.
- * Stays open (as a small dialog) until the transfer ends: OriginOS kills the process as
- * soon as no activity is left.
+ * "发送到电脑" in the share sheet. Text goes to the PC clipboard; files are opened here
+ * (while the URI grants last) and sent by [SendService], with the progress in a
+ * notification. No window: OriginOS showed one in a small-window frame.
  */
 class ShareActivity : Activity() {
     override fun onCreate(savedInstanceState: Bundle?) {
@@ -28,28 +25,27 @@ class ShareActivity : Activity() {
         val sharedText = i.getStringExtra(Intent.EXTRA_TEXT)
         when {
             uris.isNotEmpty() -> {
-                setFinishOnTouchOutside(false)
-                val label = TextView(this).apply { text = "正在发送到电脑…"; textSize = 15f }
-                val pad = (24 * resources.displayMetrics.density).toInt()
-                setContentView(LinearLayout(this).apply {
-                    orientation = LinearLayout.HORIZONTAL
-                    gravity = Gravity.CENTER_VERTICAL
-                    setPadding(pad, pad, pad, pad)
-                    addView(ProgressBar(this@ShareActivity).apply { isIndeterminate = true })
-                    addView(label, LinearLayout.LayoutParams(0, -2, 1f).apply { marginStart = pad / 2 })
-                })
-                sendUris(this, uris,
-                    onProgress = { n, total, name -> label.text = if (total > 1) "正在发送 ${n + 1}/$total：$name" else "正在发送：$name" },
-                    onDone = { finish() })
+                val items = uris.mapNotNull { open(it) }
+                if (items.isEmpty()) Toast.makeText(this, "无法读取要发送的文件", Toast.LENGTH_SHORT).show()
+                else runCatching { SendService.start(this, items) }
+                    .onFailure { Toast.makeText(this, "发送失败：${it.message}", Toast.LENGTH_SHORT).show() }
             }
             sharedText != null -> {
                 // The daemon syncs the clipboard, so putting text there sends it.
                 getSystemService(android.content.ClipboardManager::class.java)
                     .setPrimaryClip(android.content.ClipData.newPlainText("SyncBoard", sharedText))
                 Toast.makeText(this, "已发送到电脑剪贴板", Toast.LENGTH_SHORT).show()
-                finish()
             }
-            else -> finish()
         }
+        finish()
     }
+
+    private fun open(uri: Uri): SendService.Item? = runCatching {
+        val (name, size) = contentResolver.query(uri, arrayOf(OpenableColumns.DISPLAY_NAME, OpenableColumns.SIZE), null, null, null)
+            ?.use { c -> if (c.moveToFirst()) (c.getString(0) ?: "file") to c.getLong(1) else null } ?: ("file" to -1L)
+        val fd = contentResolver.openFileDescriptor(uri, "r") ?: return null
+        val len = if (size >= 0) size else fd.statSize
+        if (len < 0) { fd.close(); return null }
+        SendService.Item(name, len, fd)
+    }.onFailure { android.util.Log.w("SyncBoard", "share: ${uri.authority} unreadable", it) }.getOrNull()
 }

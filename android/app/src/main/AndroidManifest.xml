@@ -55,6 +55,11 @@
         </service>
 
         <service
+            android:name=".ui.SendService"
+            android:exported="false"
+            android:foregroundServiceType="dataSync" />
+
+        <service
             android:name=".ipc.PairHelper"
             android:exported="false"
             android:foregroundServiceType="dataSync" />
@@ -88,7 +93,7 @@
             android:excludeFromRecents="true"
             android:label="发送到电脑"
             android:noHistory="true"
-            android:theme="@android:style/Theme.DeviceDefault.Dialog.NoActionBar">
+            android:theme="@android:style/Theme.NoDisplay">
             <intent-filter>
                 <action android:name="android.intent.action.SEND" />
                 <action android:name="android.intent.action.SEND_MULTIPLE" />
